@@ -797,9 +797,6 @@ async fn run_parser_demo<P: PacketSource + 'static>(
     let mut visitor = parser.into_visitor();
     let _ = visitor.flush_all().await;
 
-    debug!(target: "demofusion::parser", "run_parser_demo: dropping visitor (closing channels)");
-    drop(visitor);
-
     info!(target: "demofusion::parser", "run_parser_demo: complete");
     Ok(())
 }
@@ -846,8 +843,6 @@ async fn run_parser_broadcast(
 
     let mut visitor = parser.into_visitor();
     let _ = visitor.flush_all().await;
-
-    drop(visitor);
 
     Ok(())
 }
