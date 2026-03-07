@@ -14,7 +14,7 @@
 //! let source = DemoSource::open("match.dem").await?;
 //! let (mut session, schemas) = source.into_session().await?;
 //!
-//! println!("Available entities: {:?}", session.entity_names());
+//! println!("Available entities: {:?}", schemas.keys().collect::<Vec<_>>());
 //!
 //! // Register queries
 //! let mut pawns = session.add_query(
@@ -30,8 +30,6 @@
 //! }
 //! ```
 
-mod session;
 mod source;
 
-pub use session::{DemoFileSession, DemoResult, QueryHandle};
 pub use source::DemoSource;
