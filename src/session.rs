@@ -110,7 +110,6 @@ pub trait IntoStreamingSession {
     async fn into_session(self) -> Result<(StreamingSession, Schemas), SessionError>;
 }
 
-// QUESTION: Why do we create a new session for every query? is that just how demofusion works?
 fn streaming_session_context() -> SessionContext {
     let config = SessionConfig::new()
         .with_target_partitions(1)
@@ -582,7 +581,7 @@ impl StreamingSession {
             );
         }
 
-        // NOTE: These should not be unbounded
+        // TODO: Use bounded channel with backpressure
         let (result_tx, result_rx) = mpsc::unbounded_channel();
 
         self.pending_queries.push(PendingQuery {
@@ -593,7 +592,6 @@ impl StreamingSession {
             result_tx,
         });
 
-        // NOTE:  May be convenient to incude the logical and physical plans here for inspection.
         Ok(QueryHandle {
             receiver: result_rx,
             schema: output_schema,
