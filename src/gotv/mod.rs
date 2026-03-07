@@ -12,30 +12,34 @@
 //! demofusion = { version = "0.1", features = ["gotv"] }
 //! ```
 //!
-//! # High-Level API: SpectateSession
+//! # High-Level API: GotvSource
 //!
-//! For most use cases, use [`SpectateSession`] which provides a simplified interface:
+//! For most use cases, use [`GotvSource`] which provides a simplified interface
+//! via the [`IntoStreamingSession`](crate::IntoStreamingSession) trait:
 //!
 //! ```ignore
-//! use demofusion::gotv::SpectateSession;
+//! use demofusion::gotv::GotvSource;
+//! use demofusion::IntoStreamingSession;
 //! use tokio_util::sync::CancellationToken;
 //! use futures::StreamExt;
 //!
 //! // Connect and discover schemas
-//! let mut session = SpectateSession::connect("http://dist1-ord1.steamcontent.com/tv/18895867").await?;
-//! println!("Map: {}", session.map());
+//! let source = GotvSource::connect("http://dist1-ord1.steamcontent.com/tv/18895867").await?;
+//! let (session, schemas) = source.into_session().await?;
+//!
+//! // Configure cancellation
+//! let cancel = CancellationToken::new();
+//! let mut session = session.with_cancel_token(cancel.clone());
 //!
 //! // Register queries
-//! let pawns = session.add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn")?;
+//! let mut pawns = session.add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn").await?;
 //!
 //! // Start streaming
-//! let cancel = CancellationToken::new();
-//! session.start(cancel.clone()).await?;
+//! let _result = session.start()?;
 //!
 //! // Consume results
-//! while let Some(result) = pawns.lock().next().await {
-//!     let batch = result?;
-//!     println!("Got {} rows", batch.num_rows());
+//! while let Some(result) = pawns.next().await {
+//!     println!("Got {} rows", result?.num_rows());
 //! }
 //! ```
 //!
@@ -73,11 +77,13 @@ mod client;
 mod config;
 mod error;
 mod session;
+mod source;
 
 pub use client::{BroadcastClient, BroadcastStats, StreamEndReason, StreamResult, SyncResponse};
 pub use config::{ClientConfig, ClientConfigBuilder};
 pub use error::{GotvError, SqlError};
 pub use session::{QueryHandle, SpectateResult, SpectateSession};
+pub use source::GotvSource;
 
 // Re-export StreamingStats for convenience when using gotv feature
 pub use crate::datafusion::streaming_stats::{StreamingStats, StreamingStatsSnapshot};
