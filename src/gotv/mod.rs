@@ -76,13 +76,11 @@
 mod client;
 mod config;
 mod error;
-mod session;
 mod source;
 
 pub use client::{BroadcastClient, BroadcastStats, StreamEndReason, StreamResult, SyncResponse};
 pub use config::{ClientConfig, ClientConfigBuilder};
 pub use error::{GotvError, SqlError};
-pub use session::{QueryHandle, SpectateResult, SpectateSession};
 pub use source::GotvSource;
 
 // Re-export StreamingStats for convenience when using gotv feature
