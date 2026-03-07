@@ -89,7 +89,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::client::BroadcastClient;
 use super::config::ClientConfig;
-use super::error::GotvError;
+use super::error::{GotvError, SqlError};
 use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
 use crate::datafusion::table_providers::EntityTableProvider;
 use crate::datafusion::streaming_stats::StreamingStats;
@@ -281,7 +281,11 @@ impl SpectateSession {
     /// - The query contains pipeline breakers and `reject_pipeline_breakers` is enabled
     pub async fn add_query(&mut self, sql: &str) -> Result<QueryHandle, GotvError> {
         let table_names = extract_table_names(sql)
-            .map_err(|e| GotvError::Sql(e.to_string()))?;
+            .map_err(|e| GotvError::Sql(SqlError::Syntax {
+                message: e.to_string(),
+                line: 0,
+                column: 0,
+            }))?;
 
         let entity_types: Vec<Arc<str>> = table_names
             .iter()
@@ -301,7 +305,9 @@ impl SpectateSession {
         }
 
         if entity_types.is_empty() {
-            return Err(GotvError::Sql("Query must reference at least one entity table".to_string()));
+            return Err(SqlError::InvalidTable {
+                table: "(none)".to_string(),
+            }.into());
         }
 
         let ctx = streaming_session_context();
@@ -322,7 +328,7 @@ impl SpectateSession {
         }
 
         let logical_plan = ctx.state().create_logical_plan(sql).await
-            .map_err(|e| GotvError::Sql(e.to_string()))?;
+            .map_err(SqlError::from_datafusion)?;
         
         let output_schema: SchemaRef = Arc::new(logical_plan.schema().as_arrow().clone());
 
@@ -378,7 +384,7 @@ impl SpectateSession {
     /// for monitoring in-flight data (rows produced, rows sent, backpressure events).
     pub async fn start_with_stats(self, cancel_token: CancellationToken) -> Result<SpectateResult, GotvError> {
         if self.pending_queries.is_empty() {
-            return Err(GotvError::Sql("No queries registered".to_string()));
+            return Err(GotvError::NotStarted);
         }
 
         let Self {
