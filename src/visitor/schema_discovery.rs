@@ -381,3 +381,49 @@ pub async fn discover_schemas_from_broadcast(data: &[u8]) -> Result<Vec<EntitySc
     let discovered = DiscoveredSchemas::from_context(ctx, symbols)?;
     Ok(discovered.schemas.into_values().collect())
 }
+
+/// Discover entity schemas from a demo file.
+///
+/// Parses the demo file header to extract entity serializer definitions and builds
+/// Arrow schemas for each entity type.
+pub async fn discover_schemas_from_demo(data: &[u8]) -> Result<Vec<EntitySchema>> {
+    use crate::haste::core::packet_channel_demo_stream::PacketChannelDemoStream;
+    use crate::haste::core::packet_source::PacketSource;
+    use crate::haste::parser::AsyncStreamingParser;
+    use bytes::Bytes;
+
+    /// A packet source that yields a single packet containing all demo bytes.
+    struct SinglePacketSource {
+        bytes: Option<Bytes>,
+    }
+
+    impl PacketSource for SinglePacketSource {
+        async fn recv(&mut self) -> Option<Bytes> {
+            self.bytes.take()
+        }
+    }
+
+    let packet_source = SinglePacketSource {
+        bytes: Some(Bytes::copy_from_slice(data)),
+    };
+    let demo_stream = PacketChannelDemoStream::new(packet_source);
+
+    let visitor = SchemaDiscoveryVisitor::new();
+    let symbols_handle = visitor.symbols_handle();
+
+    let mut parser = AsyncStreamingParser::from_stream_with_visitor(demo_stream, visitor)
+        .map_err(|e| Source2DfError::Haste(e.to_string()))?;
+
+    // Run until schema discovery completes (at DEM_SyncTick)
+    let _ = parser.run_to_end().await;
+
+    let ctx = parser.context();
+    let symbols = symbols_handle
+        .lock()
+        .map_err(|_| Source2DfError::Schema("Failed to lock symbols".to_string()))?
+        .take()
+        .ok_or_else(|| Source2DfError::Schema("No symbols discovered".to_string()))?;
+
+    let discovered = DiscoveredSchemas::from_context(ctx, symbols)?;
+    Ok(discovered.schemas.into_values().collect())
+}

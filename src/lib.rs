@@ -1,5 +1,6 @@
 pub mod batch;
 pub mod datafusion;
+pub mod demo;
 pub mod error;
 pub mod events;
 pub mod haste;

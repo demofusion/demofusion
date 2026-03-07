@@ -7,8 +7,8 @@ pub use arrow_visitor::{ArrowVisitorError, BatchingDemoVisitor};
 pub use batching_entity_dispatcher::BatchingEntityDispatcher;
 pub use batching_event_dispatcher::BatchingEventDispatcher;
 pub use schema_discovery::{
-    discover_schemas_from_broadcast, DiscoveredSchemas, SchemaDiscoveryError,
-    SchemaDiscoveryVisitor,
+    discover_schemas_from_broadcast, discover_schemas_from_demo, DiscoveredSchemas,
+    SchemaDiscoveryError, SchemaDiscoveryVisitor,
 };
 
 /// Trait for visitors that need explicit flushing at end-of-stream.

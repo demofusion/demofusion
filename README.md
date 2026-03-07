@@ -2,13 +2,14 @@
 
 SQL queries over Valve Source 2 demo files via Apache DataFusion.
 
-demofusion enables you to query game state data from Deadlock demos using SQL. It streams entity and event data through Apache DataFusion, supporting live GOTV broadcasts with real-time query results.
+demofusion enables you to query game state data from Deadlock demos using SQL. It streams entity and event data through Apache DataFusion, supporting both static demo files and live GOTV broadcasts.
 
 ## Features
 
 - **SQL queries** over entity state (players, NPCs, projectiles) and game events (damage, kills, ability usage)
-- **Single-pass parsing** for efficient multi-table queries
-- **Streaming architecture** designed for live GOTV broadcast support
+- **Single-pass streaming** for efficient multi-table queries
+- **Demo file support** via `DemoFileSession`
+- **Live GOTV broadcasts** via `SpectateSession` (requires `gotv` feature)
 - **Arrow-native** output via Apache DataFusion
 - **JOIN support** with gate-based backpressure to prevent deadlocks
 
@@ -18,14 +19,57 @@ Add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
+demofusion = { git = "https://github.com/demofusion/demofusion.git" }
+```
+
+For live GOTV broadcast support:
+
+```toml
+[dependencies]
 demofusion = { git = "https://github.com/demofusion/demofusion.git", features = ["gotv"] }
 ```
 
 ## Usage
 
+### Querying Demo Files
+
+Use `DemoFileSession` for static `.dem` files:
+
+```rust
+use demofusion::demo::DemoFileSession;
+use futures::StreamExt;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Open a demo file
+    let mut session = DemoFileSession::open("match.dem").await?;
+    
+    println!("Available entities: {:?}", session.entity_names());
+    
+    // Register SQL queries
+    let mut pawns = session.add_query(
+        "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
+    ).await?;
+    
+    // Start streaming (parses file in background)
+    let result = session.start().await?;
+    
+    // Consume results as they stream
+    while let Some(batch_result) = pawns.next().await {
+        let batch = batch_result?;
+        println!("Got {} rows", batch.num_rows());
+    }
+    
+    // Check for parser errors
+    result.parser_handle.await??;
+    
+    Ok(())
+}
+```
+
 ### Streaming Live GOTV Broadcasts
 
-Use `SpectateSession` for live match data:
+Use `SpectateSession` (requires `gotv` feature) for live match data:
 
 ```rust
 use demofusion::gotv::SpectateSession;
@@ -66,11 +110,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ### Multiple Concurrent Queries
 
-Register multiple queries that all receive data from the same parse pass:
+Both `DemoFileSession` and `SpectateSession` support multiple queries against a single parse pass:
 
 ```rust
-let mut session = SpectateSession::connect(url).await?;
-
 // Register multiple queries
 let mut pawns = session.add_query(
     "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
@@ -78,12 +120,8 @@ let mut pawns = session.add_query(
 let mut troopers = session.add_query(
     "SELECT tick, entity_index FROM CNPC_Trooper"
 ).await?;
-let mut damage = session.add_query(
-    "SELECT tick, damage, victim_player_slot FROM DamageEvent"
-).await?;
 
-let cancel = CancellationToken::new();
-let result = session.start(cancel.clone()).await?;
+let result = session.start().await?;
 
 // Process streams concurrently
 loop {
@@ -93,9 +131,6 @@ loop {
         }
         Some(batch) = troopers.next() => {
             println!("Troopers: {} rows", batch?.num_rows());
-        }
-        Some(batch) = damage.next() => {
-            println!("Damage events: {} rows", batch?.num_rows());
         }
         else => break,
     }
@@ -160,10 +195,10 @@ Game events are exposed as tables. Common event types include:
 demofusion uses a streaming architecture designed for efficient single-pass parsing:
 
 ```
-GOTV HTTP -> BroadcastClient -> Parser -> BatchingDemoVisitor -> DataFusion -> Arrow RecordBatches
-                                              |
-                                              +-> BatchingEntityDispatcher (entities)
-                                              +-> BatchingEventDispatcher (events)
+Source (File/GOTV) -> Parser -> BatchingDemoVisitor -> DataFusion -> Arrow RecordBatches
+                                       |
+                                       +-> BatchingEntityDispatcher (entities)
+                                       +-> BatchingEventDispatcher (events)
 ```
 
 Key design decisions:
@@ -188,9 +223,14 @@ Gate blocks only when ALL channels are full, not when any single channel is full
 
 ### Batch Size
 
-Control the number of rows per batch (default: 128):
+Control the number of rows per batch:
 
 ```rust
+// DemoFileSession: default 1024 (optimized for throughput)
+let session = DemoFileSession::open("match.dem").await?
+    .with_batch_size(2048);
+
+// SpectateSession: default 128 (optimized for latency)
 let session = SpectateSession::connect(url).await?
     .with_batch_size(256);
 ```
@@ -200,7 +240,7 @@ let session = SpectateSession::connect(url).await?
 Reject queries that would cause unbounded memory usage:
 
 ```rust
-let mut session = SpectateSession::connect(url).await?
+let mut session = DemoFileSession::open("match.dem").await?
     .with_reject_pipeline_breakers(true);
 
 // This will now fail because ORDER BY requires buffering all data
@@ -215,7 +255,7 @@ assert!(result.is_err());
 Monitor memory usage and throughput:
 
 ```rust
-let result = session.start(cancel).await?;
+let result = session.start().await?;
 
 if let Some(stats) = &result.stats {
     let snapshot = stats.snapshot();
@@ -229,7 +269,7 @@ if let Some(stats) = &result.stats {
 
 | Feature | Description |
 |---------|-------------|
-| `gotv` | Enables GOTV HTTP broadcast client for live match streaming |
+| `gotv` | Enables `SpectateSession` for live GOTV broadcast streaming |
 
 ## License
 
