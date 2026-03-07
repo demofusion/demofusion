@@ -13,8 +13,18 @@ default = []
 gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project"]
 
 [dependencies]
-# DataFusion (includes arrow re-exports)
-datafusion = "52"
+# DataFusion (includes arrow re-exports) - no parquet/compression needed
+datafusion = { version = "52", default-features = false, features = [
+    "sql",
+    "recursive_protection",
+    "string_expressions",
+    "datetime_expressions",
+    "regex_expressions",
+    "unicode_expressions",
+    "nested_expressions",
+    "crypto_expressions",
+    "encoding_expressions",
+] }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
