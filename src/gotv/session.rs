@@ -91,7 +91,7 @@ use super::client::BroadcastClient;
 use super::config::ClientConfig;
 use super::error::GotvError;
 use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
-use crate::datafusion::query_session::QueryTableProvider;
+use crate::datafusion::table_providers::EntityTableProvider;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
@@ -312,7 +312,7 @@ impl SpectateSession {
             let slot: ReceiverSlot = Arc::new(Mutex::new(None));
             slots.insert(Arc::clone(entity_type), slot.clone());
 
-            let provider = QueryTableProvider::new(
+            let provider = EntityTableProvider::new(
                 schema.arrow_schema.clone(),
                 Arc::clone(entity_type),
                 slot,

@@ -66,8 +66,9 @@ impl BatchingEntityDispatcher {
         self.senders.contains_key(&serializer_hash)
     }
 
-    fn all_senders_closed(&self) -> bool {
-        self.senders.values().all(|v| v.is_empty())
+    /// Returns true if there are any active senders (receivers still listening).
+    pub fn has_active_senders(&self) -> bool {
+        self.senders.values().any(|v| !v.is_empty())
     }
 
     pub async fn send(
@@ -122,11 +123,6 @@ impl BatchingEntityDispatcher {
             }
         }
 
-        // If all senders are gone, signal that parsing can stop
-        if self.all_senders_closed() {
-            return Err(ArrowVisitorError::ChannelClosed);
-        }
-
         Ok(())
     }
 
@@ -156,11 +152,6 @@ impl BatchingEntityDispatcher {
             for idx in failed_indices.into_iter().rev() {
                 sender_list.swap_remove(idx);
             }
-        }
-
-        // If all senders are gone, signal that parsing can stop
-        if self.all_senders_closed() {
-            return Err(ArrowVisitorError::ChannelClosed);
         }
 
         Ok(())
@@ -247,7 +238,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_all_senders_closed_detection() {
+    async fn test_has_active_senders() {
         let (senders, receivers) = channels::<RecordBatch>(2);
         let schema = make_simple_entity_schema(12345);
 
@@ -263,10 +254,16 @@ mod tests {
         let dispatcher = BatchingEntityDispatcher::new(sender_map, 100);
         drop(senders);
 
-        // With receivers alive, senders are not "closed" (they haven't failed yet)
-        assert!(!dispatcher.all_senders_closed());
+        // With senders registered, has_active_senders returns true
+        assert!(dispatcher.has_active_senders());
 
         // Keep receivers alive
         drop(receivers);
+    }
+
+    #[test]
+    fn test_empty_dispatcher_has_no_active_senders() {
+        let dispatcher = BatchingEntityDispatcher::new(HashMap::new(), 100);
+        assert!(!dispatcher.has_active_senders());
     }
 }

@@ -12,6 +12,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::Result as DfResult;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
+use tracing::{trace, debug};
 
 use super::distributor_channels::DistributionReceiver;
 
@@ -36,19 +37,31 @@ impl Stream for DistributionReceiverStream {
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if self.finished {
+            trace!(target: "demofusion::stream", "poll_next: already finished");
             return Poll::Ready(None);
         }
+
+        let queue_len = self.receiver.queue_len();
+        trace!(target: "demofusion::stream", queue_len, "poll_next called");
 
         let recv_fut = self.receiver.recv();
         futures::pin_mut!(recv_fut);
 
         match recv_fut.poll(cx) {
-            Poll::Ready(Some(batch)) => Poll::Ready(Some(Ok(batch))),
+            Poll::Ready(Some(batch)) => {
+                let num_rows = batch.num_rows();
+                debug!(target: "demofusion::stream", num_rows, "poll_next: received batch");
+                Poll::Ready(Some(Ok(batch)))
+            }
             Poll::Ready(None) => {
+                debug!(target: "demofusion::stream", "poll_next: stream ended (senders dropped)");
                 self.finished = true;
                 Poll::Ready(None)
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                trace!(target: "demofusion::stream", "poll_next: pending (waiting for data)");
+                Poll::Pending
+            }
         }
     }
 }
@@ -56,6 +69,16 @@ impl Stream for DistributionReceiverStream {
 impl RecordBatchStream for DistributionReceiverStream {
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
+    }
+}
+
+impl Drop for DistributionReceiverStream {
+    fn drop(&mut self) {
+        debug!(
+            target: "demofusion::stream",
+            finished = self.finished,
+            "DistributionReceiverStream dropped"
+        );
     }
 }
 

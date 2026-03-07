@@ -21,8 +21,8 @@ use tokio::task::JoinHandle;
 
 use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
-use crate::datafusion::query_session::QueryTableProvider;
 use crate::datafusion::streaming_stats::StreamingStats;
+use crate::datafusion::table_providers::EntityTableProvider;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
 use crate::visitor::{discover_schemas_from_demo, BatchingDemoVisitor, BatchingEntityDispatcher};
@@ -232,7 +232,7 @@ impl DemoFileSession {
             let slot: ReceiverSlot = Arc::new(Mutex::new(None));
             slots.insert(Arc::clone(entity_type), slot.clone());
 
-            let provider = QueryTableProvider::new(
+            let provider = EntityTableProvider::new(
                 schema.arrow_schema.clone(),
                 Arc::clone(entity_type),
                 slot,

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
+use tracing::{trace, debug, warn};
 
 use crate::datafusion::distributor_channels::DistributionSender;
 use crate::datafusion::streaming_stats::StreamingStats;
@@ -63,6 +64,11 @@ impl BatchingEventDispatcher {
         self.senders.is_empty()
     }
 
+    /// Returns true if there are any active senders (receivers still listening).
+    pub fn has_active_senders(&self) -> bool {
+        self.senders.values().any(|v| !v.is_empty())
+    }
+
     pub async fn send(
         &mut self,
         tick: i32,
@@ -107,24 +113,56 @@ impl BatchingEventDispatcher {
     }
 
     pub async fn flush_all(&mut self) -> Result<(), ArrowVisitorError> {
-        for (_message_id, sender_list) in self.senders.iter_mut() {
+        let mut total_flushed = 0;
+        let mut total_rows = 0;
+        
+        for (message_id, sender_list) in self.senders.iter_mut() {
             for swb in sender_list.iter_mut() {
                 if swb.builder.has_data() {
                     let batch = swb.builder.flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
                     
+                    let num_rows = batch.num_rows();
+                    total_rows += num_rows;
+                    total_flushed += 1;
+                    
+                    debug!(
+                        target: "demofusion::dispatcher",
+                        message_id,
+                        num_rows,
+                        "flush_all: flushing partial batch"
+                    );
+                    
                     // Record final batch stats
                     if let Some(stats) = &self.stats {
-                        stats.record_batch_sent(batch.num_rows() as u64);
+                        stats.record_batch_sent(num_rows as u64);
                     }
 
-                    swb.sender
-                        .send(batch)
-                        .await
-                        .map_err(|_| ArrowVisitorError::ChannelClosed)?;
+                    match swb.sender.send(batch).await {
+                        Ok(()) => {
+                            trace!(target: "demofusion::dispatcher", "flush_all: send succeeded");
+                        }
+                        Err(_) => {
+                            warn!(
+                                target: "demofusion::dispatcher",
+                                message_id,
+                                num_rows,
+                                "flush_all: channel closed, data lost"
+                            );
+                            return Err(ArrowVisitorError::ChannelClosed);
+                        }
+                    }
                 }
             }
         }
+        
+        debug!(
+            target: "demofusion::dispatcher",
+            total_flushed,
+            total_rows,
+            "flush_all: complete"
+        );
+        
         Ok(())
     }
 }

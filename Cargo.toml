@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 
 [features]
 default = []
-gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project", "dep:tracing"]
+gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project"]
 
 [dependencies]
 # DataFusion (includes arrow re-exports)
@@ -47,11 +47,14 @@ serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 tokio-util = { version = "0.7", features = ["io"], optional = true }
 pin-project = { version = "1", optional = true }
-tracing = { version = "0.1", optional = true }
+
+# Logging/tracing
+tracing = "0.1"
 
 [dev-dependencies]
 expect-test = "1.5.1"
 tokio-test = "0.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 prost-build = "0.14"

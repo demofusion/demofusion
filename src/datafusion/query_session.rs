@@ -16,7 +16,7 @@
 //! │       ▼                                                             │
 //! │  Phase 1: Plan all queries                                          │
 //! │    - Create SessionContext per query                                │
-//! │    - Register QueryTableProvider with OnceCell<Receiver>            │
+//! │    - Register EntityTableProvider/EventTableProvider                │
 //! │    - Plan SQL → PhysicalPlan                                        │
 //! │    - Walk plan to find used entity types                            │
 //! │    - Collect used slots                                             │
@@ -67,46 +67,26 @@
 //! }
 //! ```
 
-use std::any::Any;
 use std::collections::HashMap;
-use std::fmt::{self, Debug};
 use std::sync::Arc;
 
-use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use async_trait::async_trait;
 use tokio::task::JoinHandle;
-use datafusion::catalog::Session;
-use datafusion::datasource::TableProvider;
-use datafusion::error::Result as DfResult;
-use datafusion::execution::TaskContext;
-use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::physical_expr::expressions::col;
-use datafusion::physical_expr::PhysicalSortExpr;
-use datafusion::physical_expr_common::sort_expr::LexOrdering;
-use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
-use datafusion::physical_plan::{execute_stream, ExecutionPlan, SendableRecordBatchStream};
+use datafusion::physical_plan::{execute_stream, SendableRecordBatchStream};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion::common::arrow::compute::SortOptions;
-use parking_lot::Mutex;
+use tracing::{debug, info, warn};
 
-use crate::datafusion::distribution_stream::DistributionReceiverStream;
-use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
+use crate::datafusion::distributor_channels::{self, DistributionSender};
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
-// TODO: Fix tick_bin for DataFusion 52 (ScalarUDFImpl changes)
-// use crate::datafusion::tick_bin::make_tick_bin_udf;
+use crate::datafusion::table_providers::{BatchReceiver, EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot};
 use crate::error::{Result, Source2DfError};
 use crate::events::{event_schema, EventType};
 use crate::haste::core::packet_source::PacketSource;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
 
-type BatchReceiver = DistributionReceiver<RecordBatch>;
 type BatchSender = DistributionSender<RecordBatch>;
 
-/// Slot for passing a receiver to the partition stream.
-/// Uses Mutex<Option<...>> so ownership can be taken exactly once in execute().
-type ReceiverSlot = Arc<Mutex<Option<BatchReceiver>>>;
 
 /// Stream format for demo data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -247,10 +227,10 @@ impl StreamingQuerySession {
             let mut query_entity_slots: HashMap<Arc<str>, ReceiverSlot> = HashMap::new();
             for entity_type in &query_entity_types {
                 let schema = &entity_schemas[&**entity_type];
-                let slot: ReceiverSlot = Arc::new(Mutex::new(None));
+                let slot = new_receiver_slot();
                 query_entity_slots.insert(entity_type.clone(), slot.clone());
 
-                let provider = QueryTableProvider::new(
+                let provider = EntityTableProvider::new(
                     schema.arrow_schema.clone(),
                     entity_type.clone(),
                     slot,
@@ -266,10 +246,10 @@ impl StreamingQuerySession {
                         "No schema found for event type: {}",
                         event_type.table_name()
                     )))?;
-                let slot: ReceiverSlot = Arc::new(Mutex::new(None));
+                let slot = new_receiver_slot();
                 query_event_slots.insert(*event_type, slot.clone());
 
-                let provider = QueryEventTableProvider::new(
+                let provider = EventTableProvider::new(
                     *event_type,
                     schema,
                     slot,
@@ -505,6 +485,14 @@ async fn run_parser_demo<P: PacketSource + 'static>(
     use crate::haste::parser::AsyncStreamingParser;
     use crate::visitor::{BatchingDemoVisitor, BatchingEntityDispatcher, BatchingEventDispatcher};
 
+    debug!(
+        target: "demofusion::parser",
+        batch_size,
+        entity_types = entity_senders.len(),
+        event_types = event_senders.len(),
+        "run_parser_demo: starting"
+    );
+
     let demo_stream = PacketChannelDemoStream::new(source);
 
     // Create batching dispatchers that send directly through distribution channels
@@ -530,302 +518,39 @@ async fn run_parser_demo<P: PacketSource + 'static>(
         .map_err(|e| Source2DfError::Haste(e.to_string()))?;
 
     // Run parser to completion - errors are expected on stream close
-    let _result = parser.run_to_end().await;
+    debug!(target: "demofusion::parser", "run_parser_demo: running parser to end");
+    let parse_result = parser.run_to_end().await;
+    
+    match &parse_result {
+        Ok(()) => debug!(target: "demofusion::parser", "run_parser_demo: parser completed successfully"),
+        Err(e) => debug!(target: "demofusion::parser", error = %e, "run_parser_demo: parser ended with error"),
+    }
 
     // Flush any remaining batched data
+    debug!(target: "demofusion::parser", "run_parser_demo: flushing remaining data");
     let mut visitor = parser.into_visitor();
-    let _flush_result = visitor.flush_all().await;
+    let flush_result = visitor.flush_all().await;
+    
+    match &flush_result {
+        Ok(()) => debug!(target: "demofusion::parser", "run_parser_demo: flush completed successfully"),
+        Err(e) => warn!(target: "demofusion::parser", error = ?e, "run_parser_demo: flush failed"),
+    }
 
     // Dropping visitor drops the dispatchers, which drops the senders,
     // which closes the distribution channels and signals end-of-stream to receivers.
+    debug!(target: "demofusion::parser", "run_parser_demo: dropping visitor (closing channels)");
     drop(visitor);
 
+    info!(target: "demofusion::parser", "run_parser_demo: complete");
     Ok(())
-}
-
-pub(crate) struct QueryTableProvider {
-    schema: SchemaRef,
-    entity_type: Arc<str>,
-    receiver_slot: ReceiverSlot,
-}
-
-impl QueryTableProvider {
-    pub(crate) fn new(schema: SchemaRef, entity_type: Arc<str>, receiver_slot: ReceiverSlot) -> Self {
-        Self {
-            schema,
-            entity_type,
-            receiver_slot,
-        }
-    }
-
-    fn build_tick_ordering(&self, projection: Option<&Vec<usize>>) -> Vec<LexOrdering> {
-        let tick_idx = self.schema.index_of("tick").ok();
-
-        let tick_in_projection = match (tick_idx, projection) {
-            (Some(idx), Some(proj)) => proj.contains(&idx),
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-
-        if !tick_in_projection {
-            return vec![];
-        }
-
-        let tick_col = col("tick", &self.schema).ok();
-
-        match tick_col {
-            Some(expr) => {
-                let sort_expr = PhysicalSortExpr {
-                    expr,
-                    options: SortOptions {
-                        descending: false,
-                        nulls_first: false,
-                    },
-                };
-                LexOrdering::new(vec![sort_expr]).into_iter().collect()
-            }
-            None => vec![],
-        }
-    }
-}
-
-impl Debug for QueryTableProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueryTableProvider")
-            .field("entity_type", &self.entity_type)
-            .field("schema_fields", &self.schema.fields().len())
-            .finish()
-    }
-}
-
-#[async_trait]
-impl TableProvider for QueryTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        limit: Option<usize>,
-    ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        let partition_stream = QueryPartitionStream {
-            schema: self.schema.clone(),
-            entity_type: self.entity_type.clone(),
-            receiver_slot: self.receiver_slot.clone(),
-        };
-
-        let partition_streams: Vec<Arc<dyn PartitionStream>> = vec![Arc::new(partition_stream)];
-        let tick_ordering = self.build_tick_ordering(projection);
-
-        let exec = StreamingTableExec::try_new(
-            self.schema.clone(),
-            partition_streams,
-            projection,
-            tick_ordering,
-            true, // unbounded stream
-            limit,
-        )?;
-
-        Ok(Arc::new(exec))
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> DfResult<Vec<TableProviderFilterPushDown>> {
-        Ok(filters
-            .iter()
-            .map(|_| TableProviderFilterPushDown::Unsupported)
-            .collect())
-    }
-}
-
-struct QueryPartitionStream {
-    schema: SchemaRef,
-    entity_type: Arc<str>,
-    receiver_slot: ReceiverSlot,
-}
-
-impl Debug for QueryPartitionStream {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueryPartitionStream")
-            .field("entity_type", &self.entity_type)
-            .finish()
-    }
-}
-
-impl PartitionStream for QueryPartitionStream {
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-
-    fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        // Take ownership of the receiver from the slot.
-        // This should only be called once per slot.
-        let receiver = self.receiver_slot.lock().take()
-            .expect("Receiver slot empty - execute() called before slot was filled or called twice");
-        
-        Box::pin(DistributionReceiverStream::new(self.schema.clone(), receiver))
-    }
-}
-
-struct QueryEventTableProvider {
-    event_type: EventType,
-    schema: SchemaRef,
-    receiver_slot: ReceiverSlot,
-}
-
-impl QueryEventTableProvider {
-    fn new(
-        event_type: EventType,
-        schema: SchemaRef,
-        receiver_slot: ReceiverSlot,
-    ) -> Self {
-        Self {
-            event_type,
-            schema,
-            receiver_slot,
-        }
-    }
-
-    fn build_tick_ordering(&self, projection: Option<&Vec<usize>>) -> Vec<LexOrdering> {
-        let tick_idx = self.schema.index_of("tick").ok();
-
-        let tick_in_projection = match (tick_idx, projection) {
-            (Some(idx), Some(proj)) => proj.contains(&idx),
-            (Some(_), None) => true,
-            (None, _) => false,
-        };
-
-        if !tick_in_projection {
-            return vec![];
-        }
-
-        let tick_col = col("tick", &self.schema).ok();
-
-        match tick_col {
-            Some(expr) => {
-                let sort_expr = PhysicalSortExpr {
-                    expr,
-                    options: SortOptions {
-                        descending: false,
-                        nulls_first: false,
-                    },
-                };
-                LexOrdering::new(vec![sort_expr]).into_iter().collect()
-            }
-            None => vec![],
-        }
-    }
-}
-
-impl Debug for QueryEventTableProvider {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueryEventTableProvider")
-            .field("event_type", &self.event_type)
-            .field("table_name", &self.event_type.table_name())
-            .finish()
-    }
-}
-
-#[async_trait]
-impl TableProvider for QueryEventTableProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn schema(&self) -> SchemaRef {
-        self.schema.clone()
-    }
-
-    fn table_type(&self) -> TableType {
-        TableType::Base
-    }
-
-    async fn scan(
-        &self,
-        _state: &dyn Session,
-        projection: Option<&Vec<usize>>,
-        _filters: &[Expr],
-        limit: Option<usize>,
-    ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        let partition_stream = QueryEventPartitionStream {
-            event_type: self.event_type,
-            schema: self.schema.clone(),
-            receiver_slot: self.receiver_slot.clone(),
-        };
-
-        let partition_streams: Vec<Arc<dyn PartitionStream>> = vec![Arc::new(partition_stream)];
-        let tick_ordering = self.build_tick_ordering(projection);
-
-        let exec = StreamingTableExec::try_new(
-            self.schema.clone(),
-            partition_streams,
-            projection,
-            tick_ordering,
-            true, // unbounded stream
-            limit,
-        )?;
-
-        Ok(Arc::new(exec))
-    }
-
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> DfResult<Vec<TableProviderFilterPushDown>> {
-        Ok(filters
-            .iter()
-            .map(|_| TableProviderFilterPushDown::Unsupported)
-            .collect())
-    }
-}
-
-struct QueryEventPartitionStream {
-    event_type: EventType,
-    schema: SchemaRef,
-    receiver_slot: ReceiverSlot,
-}
-
-impl Debug for QueryEventPartitionStream {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("QueryEventPartitionStream")
-            .field("event_type", &self.event_type)
-            .finish()
-    }
-}
-
-impl PartitionStream for QueryEventPartitionStream {
-    fn schema(&self) -> &SchemaRef {
-        &self.schema
-    }
-
-    fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        // Take ownership of the receiver from the slot.
-        // Batching now happens producer-side in BatchingEventDispatcher,
-        // so we receive RecordBatch directly (like entities).
-        let receiver = self.receiver_slot.lock().take()
-            .expect("Event receiver slot empty - execute() called before slot was filled or called twice");
-        
-        Box::pin(DistributionReceiverStream::new(self.schema.clone(), receiver))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::datasource::TableProvider;
+    use datafusion::physical_plan::ExecutionPlan;
 
     fn make_test_entity_schema(name: &str, hash: u64) -> EntitySchema {
         let arrow_schema = Arc::new(Schema::new(vec![
@@ -845,51 +570,22 @@ mod tests {
     }
 
     #[test]
-    fn test_query_table_provider_creation() {
+    fn test_entity_table_provider_creation() {
         let schema = make_test_entity_schema("TestEntity", 123);
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
-        let provider = QueryTableProvider::new(
+        let slot = new_receiver_slot();
+        let provider = EntityTableProvider::new(
             schema.arrow_schema.clone(),
             Arc::from("TestEntity"),
             slot,
         );
 
-        assert_eq!(&*provider.entity_type, "TestEntity");
         assert_eq!(provider.schema().fields().len(), 4);
-    }
-
-    #[tokio::test]
-    async fn test_tick_ordering() {
-        let schema = make_test_entity_schema("TestEntity", 123);
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
-        let provider = QueryTableProvider::new(
-            schema.arrow_schema.clone(),
-            Arc::from("TestEntity"),
-            slot,
-        );
-
-        let ordering = provider.build_tick_ordering(None);
-        assert_eq!(ordering.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn test_tick_ordering_without_tick_projection() {
-        let schema = make_test_entity_schema("TestEntity", 123);
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
-        let provider = QueryTableProvider::new(
-            schema.arrow_schema.clone(),
-            Arc::from("TestEntity"),
-            slot,
-        );
-
-        let ordering = provider.build_tick_ordering(Some(&vec![1, 2]));
-        assert_eq!(ordering.len(), 0);
     }
 
     #[tokio::test]
     async fn test_receiver_slot_flow() {
         let schema = make_test_entity_schema("TestEntity", 123);
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
+        let slot = new_receiver_slot();
         
         // Create a distribution channel (single channel)
         let (senders, mut receivers) = distributor_channels::channels::<RecordBatch>(1);
@@ -957,8 +653,8 @@ mod tests {
         let ctx = streaming_session_context();
         
         // Register providers for one entity type
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
-        let provider = QueryTableProvider::new(
+        let slot = new_receiver_slot();
+        let provider = EntityTableProvider::new(
             entity_schemas["CCitadelPlayerPawn"].arrow_schema.clone(),
             Arc::from("CCitadelPlayerPawn"),
             slot.clone(),
@@ -1023,22 +719,21 @@ mod tests {
     }
 
     #[test]
-    fn test_query_event_table_provider_creation() {
+    fn test_event_table_provider_creation() {
         use crate::events::{event_schema, EventType};
 
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
+        let slot = new_receiver_slot();
 
-        let provider = QueryEventTableProvider::new(EventType::Damage, schema.clone(), slot);
+        let provider = EventTableProvider::new(EventType::Damage, schema.clone(), slot);
 
-        assert_eq!(provider.event_type, EventType::Damage);
-        assert!(provider.schema().field_with_name("tick").is_ok());
-        assert!(provider.schema().field_with_name("damage").is_ok());
+        assert_eq!(provider.schema().field_with_name("tick").is_ok(), true);
+        assert_eq!(provider.schema().field_with_name("damage").is_ok(), true);
     }
 
     #[tokio::test]
     async fn test_event_receiver_slot_flow() {
-        let slot: ReceiverSlot = Arc::new(Mutex::new(None));
+        let slot = new_receiver_slot();
 
         // Create a distribution channel for events (now sends RecordBatch directly)
         let (senders, mut receivers) = distributor_channels::channels::<RecordBatch>(1);

@@ -65,6 +65,18 @@ impl BatchingDemoVisitor {
         
         Ok(())
     }
+
+    /// Returns true if there are any active senders across both dispatchers.
+    /// When this returns false, all consumers have disconnected and parsing can stop.
+    fn has_active_senders(&self) -> bool {
+        let entity_active = self.entity_dispatcher.has_active_senders();
+        let event_active = self.event_dispatcher
+            .as_ref()
+            .map(|d| d.has_active_senders())
+            .unwrap_or(false);
+        
+        entity_active || event_active
+    }
 }
 
 impl Visitor for BatchingDemoVisitor {
@@ -82,7 +94,14 @@ impl Visitor for BatchingDemoVisitor {
     ) -> std::result::Result<(), Self::Error> {
         self.entity_dispatcher
             .send(ctx.tick(), delta_header, entity)
-            .await
+            .await?;
+        
+        // Check if all consumers have disconnected (both entity and event)
+        if !self.has_active_senders() {
+            return Err(ArrowVisitorError::ChannelClosed);
+        }
+        
+        Ok(())
     }
 
     async fn on_packet(
@@ -94,6 +113,12 @@ impl Visitor for BatchingDemoVisitor {
         if let Some(ref mut event_dispatcher) = self.event_dispatcher {
             event_dispatcher.send(ctx.tick(), packet_type, data).await?;
         }
+        
+        // Check if all consumers have disconnected (both entity and event)
+        if !self.has_active_senders() {
+            return Err(ArrowVisitorError::ChannelClosed);
+        }
+        
         Ok(())
     }
 
