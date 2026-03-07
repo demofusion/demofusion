@@ -1,0 +1,63 @@
+[package]
+name = "demofusion"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "SQL queries over Valve Source 2 demo files via Apache DataFusion"
+
+[lib]
+crate-type = ["rlib"]
+
+[features]
+default = []
+gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project", "dep:tracing"]
+
+[dependencies]
+# DataFusion (includes arrow re-exports)
+datafusion = "52"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# Utilities
+async-channel = "2.5"
+thiserror = "2"
+bytes = "1"
+prost = "0.14"
+nohash-hasher = "0.2.0"
+
+# Haste dependencies (previously from haste_core)
+dungers = { git = "https://github.com/deadlock-api/dungers.git", rev = "5e1e2aac76a027987911de3ef3d23ecfd992a7fb", features = ["varint", "bitbuf", "charsor"] }
+valveprotos = { git = "https://github.com/demofusion/valveprotos-rs.git", rev = "22d515f", features = ["gc-client", "serde", "user-msgs", "reflect"] }
+prost-reflect = "0.16"
+hashbrown = { version = "0.16.1", features = ["inline-more"] }
+nohash = "0.2.0"
+snap = "1.1.1"
+sync-unsafe-cell = "0.1.1"
+dyn-clone = "1.0.20"
+anyhow = "1.0"
+tokio-stream = "0.1.18"
+parking_lot = "0.12"
+
+# GOTV HTTP client (optional)
+reqwest = { version = "0.12", default-features = false, features = ["gzip", "json", "rustls-tls"], optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+pin-project = { version = "1", optional = true }
+tracing = { version = "0.1", optional = true }
+
+[dev-dependencies]
+expect-test = "1.5.1"
+tokio-test = "0.4"
+
+[build-dependencies]
+prost-build = "0.14"
+prost-types = "0.14"
+prost-reflect = "0.16"
+heck = "0.5"
+
+[profile.release]
+debug = true

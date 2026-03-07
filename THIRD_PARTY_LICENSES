@@ -1,0 +1,59 @@
+This file contains license information for third-party code included in demofusion.
+
+================================================================================
+haste - Source 2 demo parser
+https://github.com/blukai/haste
+================================================================================
+
+The following files in src/haste/ are derived from haste:
+
+  src/haste/core/bitreader.rs
+  src/haste/core/demofile.rs
+  src/haste/core/demostream.rs
+  src/haste/core/entities.rs
+  src/haste/core/entityclasses.rs
+  src/haste/core/fielddecoder.rs
+  src/haste/core/fieldmetadata.rs
+  src/haste/core/fieldpath.rs
+  src/haste/core/fieldvalue.rs
+  src/haste/core/flattenedserializers.rs
+  src/haste/core/instancebaseline.rs
+  src/haste/core/parser.rs
+  src/haste/core/quantizedfloat.rs
+  src/haste/core/stringtables.rs
+  src/haste/vartype/error.rs
+  src/haste/vartype/mod.rs
+  src/haste/vartype/parser.rs
+  src/haste/vartype/span.rs
+  src/haste/vartype/tokenizer.rs
+
+These files have been modified from the original source.
+
+BSD 3-Clause License
+
+Copyright (c) 2024, blukai
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
