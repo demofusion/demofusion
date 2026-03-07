@@ -22,7 +22,7 @@ mod tests {
     use tokio::io::BufReader;
 
     use crate::datafusion::query_session::{StreamFormat, StreamingQuerySession};
-    use crate::events::{event_schema, EventType};
+    use crate::events::{EventType, event_schema};
     use crate::haste::async_demofile::AsyncDemoFile;
     use crate::haste::core::packet_source::PacketSource;
     use crate::haste::parser::AsyncStreamingParser;
@@ -50,9 +50,9 @@ mod tests {
             crate::error::Source2DfError::Haste(format!("Failed to open demo: {}", e))
         })?;
         let reader = BufReader::new(file);
-        let demo_file = AsyncDemoFile::start_reading(reader)
-            .await
-            .map_err(|e| crate::error::Source2DfError::Haste(format!("Failed to read demo: {}", e)))?;
+        let demo_file = AsyncDemoFile::start_reading(reader).await.map_err(|e| {
+            crate::error::Source2DfError::Haste(format!("Failed to read demo: {}", e))
+        })?;
 
         let visitor = SchemaDiscoveryVisitor::new();
         let symbols_handle = visitor.symbols_handle();
@@ -65,9 +65,13 @@ mod tests {
         let ctx = parser.context();
         let symbols = symbols_handle
             .lock()
-            .map_err(|_| crate::error::Source2DfError::Schema("Failed to lock symbols".to_string()))?
+            .map_err(|_| {
+                crate::error::Source2DfError::Schema("Failed to lock symbols".to_string())
+            })?
             .take()
-            .ok_or_else(|| crate::error::Source2DfError::Schema("No symbols discovered".to_string()))?;
+            .ok_or_else(|| {
+                crate::error::Source2DfError::Schema("No symbols discovered".to_string())
+            })?;
 
         DiscoveredSchemas::from_context(ctx, symbols)
     }
@@ -139,7 +143,10 @@ mod tests {
         assert_eq!(EventType::Damage.table_name(), "DamageEvent");
         assert_eq!(EventType::HeroKilled.table_name(), "HeroKilledEvent");
         assert_eq!(EventType::BulletHit.table_name(), "BulletHitEvent");
-        assert_eq!(EventType::ModifierApplied.table_name(), "ModifierAppliedEvent");
+        assert_eq!(
+            EventType::ModifierApplied.table_name(),
+            "ModifierAppliedEvent"
+        );
     }
 
     #[test]
@@ -205,7 +212,9 @@ mod tests {
             "Should discover CCitadelPlayerPawn"
         );
         assert!(
-            entity_names.iter().any(|n| *n == "CCitadelPlayerController"),
+            entity_names
+                .iter()
+                .any(|n| *n == "CCitadelPlayerController"),
             "Should discover CCitadelPlayerController"
         );
     }
@@ -274,12 +283,12 @@ mod tests {
         }
 
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
-        
+
         // Verify the schema is valid for DataFusion
         assert!(schema.field_with_name("tick").is_ok());
         assert!(schema.field_with_name("damage").is_ok());
         assert!(schema.field_with_name("entindex_victim").is_ok());
-        
+
         eprintln!("DamageEvent schema fields:");
         for field in schema.fields() {
             eprintln!("  {}: {:?}", field.name(), field.data_type());
@@ -296,20 +305,21 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            test_query_event_table_e2e_inner()
-        ).await;
-        
+            test_query_event_table_e2e_inner(),
+        )
+        .await;
+
         match result {
             Ok(()) => eprintln!("[test] Completed successfully"),
             Err(_) => panic!("[test] TIMEOUT after 60 seconds"),
         }
     }
-    
+
     async fn test_query_event_table_e2e_inner() {
         eprintln!("[test] Loading demo bytes...");
         let demo_bytes = load_demo_bytes().await.expect("load demo");
         eprintln!("[test] Loaded {} bytes", demo_bytes.len());
-        
+
         eprintln!("[test] Discovering schemas...");
         let entity_schemas = get_entity_schemas().await.expect("get schemas");
         eprintln!("[test] Discovered {} entity schemas", entity_schemas.len());
@@ -330,7 +340,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         eprintln!("[test] run_queries returned {} streams", streams.len());
         assert_eq!(streams.len(), 1);
@@ -341,20 +352,30 @@ mod tests {
         let mut batch_count = 0;
 
         eprintln!("[test] Starting to consume stream...");
-        
+
         while let Some(result) = stream.next().await {
             batch_count += 1;
             let batch = result.expect("batch");
             let batch_rows = batch.num_rows();
             total_rows += batch_rows;
-            eprintln!("[test] Batch {}: received {} rows (total: {})", batch_count, batch_rows, total_rows);
+            eprintln!(
+                "[test] Batch {}: received {} rows (total: {})",
+                batch_count, batch_rows, total_rows
+            );
             batches.push(batch);
         }
 
-        eprintln!("[test] Stream consumption complete: {} batches, {} total rows", batches.len(), total_rows);
-        
-        assert!(total_rows > 0, "Should receive DamageEvent events from demo");
-        
+        eprintln!(
+            "[test] Stream consumption complete: {} batches, {} total rows",
+            batches.len(),
+            total_rows
+        );
+
+        assert!(
+            total_rows > 0,
+            "Should receive DamageEvent events from demo"
+        );
+
         if let Some(batch) = batches.first() {
             assert!(batch.schema().field_with_name("tick").is_ok());
             assert!(batch.schema().field_with_name("damage").is_ok());
@@ -407,7 +428,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         eprintln!("[test] run_queries returned {} streams", streams.len());
         assert_eq!(streams.len(), 2, "Should have 2 query streams");
@@ -416,23 +438,24 @@ mod tests {
         let stream_futures: Vec<_> = streams
             .into_iter()
             .enumerate()
-            .map(|(i, mut stream)| {
-                async move {
-                    let mut rows = 0;
-                    let mut batch_count = 0;
-                    eprintln!("[test] Stream {} starting to consume", i);
-                    while let Some(result) = stream.next().await {
-                        let batch = result.expect("batch");
-                        batch_count += 1;
-                        rows += batch.num_rows();
-                        eprintln!(
-                            "[test] Stream {} batch {}: {} rows (total: {})",
-                            i, batch_count, batch.num_rows(), rows
-                        );
-                    }
-                    eprintln!("[test] Stream {} completed with {} rows", i, rows);
-                    rows
+            .map(|(i, mut stream)| async move {
+                let mut rows = 0;
+                let mut batch_count = 0;
+                eprintln!("[test] Stream {} starting to consume", i);
+                while let Some(result) = stream.next().await {
+                    let batch = result.expect("batch");
+                    batch_count += 1;
+                    rows += batch.num_rows();
+                    eprintln!(
+                        "[test] Stream {} batch {}: {} rows (total: {})",
+                        i,
+                        batch_count,
+                        batch.num_rows(),
+                        rows
+                    );
                 }
+                eprintln!("[test] Stream {} completed with {} rows", i, rows);
+                rows
             })
             .collect();
 
@@ -445,7 +468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires test demo file"]  
+    #[ignore = "requires test demo file"]
     async fn test_query_entity_and_event_together() {
         if !demo_exists() {
             eprintln!("Skipping: demo file not found");
@@ -472,7 +495,8 @@ mod tests {
 
         let queries = vec![
             "SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 50".to_string(),
-            "SELECT tick, objective_team, entity_damaged FROM BossDamagedEvent LIMIT 50".to_string(),
+            "SELECT tick, objective_team, entity_damaged FROM BossDamagedEvent LIMIT 50"
+                .to_string(),
         ];
 
         let streams = StreamingQuerySession::run_queries(
@@ -484,7 +508,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         assert_eq!(streams.len(), 2);
 
@@ -512,7 +537,7 @@ mod tests {
         );
 
         eprintln!("Entity rows: {}, Event rows: {}", entity_rows, event_rows);
-        
+
         assert!(entity_rows > 0, "Should have entity data");
     }
 
@@ -562,7 +587,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         eprintln!("[test] run_queries returned {} streams", streams.len());
         assert_eq!(streams.len(), 1);
@@ -605,8 +631,11 @@ mod tests {
             let schema = batch.schema();
             assert!(schema.field_with_name("tick").is_ok());
             assert!(schema.field_with_name("damage").is_ok());
-            assert!(schema.field_with_name("origin").is_ok(), "Should have origin (nested CMsgVector) field");
-            
+            assert!(
+                schema.field_with_name("origin").is_ok(),
+                "Should have origin (nested CMsgVector) field"
+            );
+
             // Log the origin field type to verify it's a struct
             let origin_field = schema.field_with_name("origin").unwrap();
             eprintln!("[test] origin field type: {:?}", origin_field.data_type());
@@ -661,7 +690,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         eprintln!("[test] run_queries returned {} streams", streams.len());
         assert_eq!(streams.len(), 1);
@@ -759,7 +789,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         eprintln!("[test] run_queries returned {} streams", streams.len());
         assert_eq!(streams.len(), 1);
@@ -794,7 +825,8 @@ mod tests {
 
         // RecentDamageSummary events should exist in a normal demo
         // Verify the schema is correct for list of messages
-        let schema = event_schema("RecentDamageSummaryEvent").expect("RecentDamageSummaryEvent schema");
+        let schema =
+            event_schema("RecentDamageSummaryEvent").expect("RecentDamageSummaryEvent schema");
         assert!(schema.field_with_name("tick").is_ok());
         assert!(schema.field_with_name("player_slot").is_ok());
         assert!(
@@ -814,14 +846,26 @@ mod tests {
         );
 
         // Verify the inner struct has expected fields
-        if let datafusion::arrow::datatypes::DataType::List(inner_field) = damage_records_field.data_type() {
+        if let datafusion::arrow::datatypes::DataType::List(inner_field) =
+            damage_records_field.data_type()
+        {
             eprintln!("[test] damage_records inner field: {:?}", inner_field);
-            if let datafusion::arrow::datatypes::DataType::Struct(fields) = inner_field.data_type() {
+            if let datafusion::arrow::datatypes::DataType::Struct(fields) = inner_field.data_type()
+            {
                 let field_names: Vec<_> = fields.iter().map(|f| f.name().as_str()).collect();
                 eprintln!("[test] DamageRecord struct fields: {:?}", field_names);
-                assert!(field_names.contains(&"damage"), "DamageRecord should have 'damage' field");
-                assert!(field_names.contains(&"hits"), "DamageRecord should have 'hits' field");
-                assert!(field_names.contains(&"hero_id"), "DamageRecord should have 'hero_id' field");
+                assert!(
+                    field_names.contains(&"damage"),
+                    "DamageRecord should have 'damage' field"
+                );
+                assert!(
+                    field_names.contains(&"hits"),
+                    "DamageRecord should have 'hits' field"
+                );
+                assert!(
+                    field_names.contains(&"hero_id"),
+                    "DamageRecord should have 'hero_id' field"
+                );
             }
         }
 
@@ -840,9 +884,7 @@ mod tests {
         let entity_schemas = get_entity_schemas().await.expect("get schemas");
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
-        let queries = vec![
-            "SELECT COUNT(*) as total FROM DamageEvent".to_string(),
-        ];
+        let queries = vec!["SELECT COUNT(*) as total FROM DamageEvent".to_string()];
 
         let result = StreamingQuerySession::run_queries(
             packet_source,
@@ -882,9 +924,9 @@ mod tests {
     async fn test_join_event_tables_plan_selection() {
         // Verify that JOINing two event tables selects SymmetricHashJoinExec
         // with correct streaming configuration (no RepartitionExec)
-        use datafusion::prelude::*;
-        use crate::events::{EventType, event_schema};
         use crate::datafusion::table_providers::{EventTableProvider, new_receiver_slot};
+        use crate::events::{EventType, event_schema};
+        use datafusion::prelude::*;
 
         // Use streaming-compatible session config (target_partitions=1)
         let config = SessionConfig::new()
@@ -895,30 +937,33 @@ mod tests {
         // Register two event tables with mock receiver slots
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_slot = new_receiver_slot();
-        let damage_provider = EventTableProvider::new(
-            EventType::Damage,
-            damage_schema,
-            damage_slot,
-        );
+        let damage_provider =
+            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
         let kill_slot = new_receiver_slot();
-        let kill_provider = EventTableProvider::new(
-            EventType::HeroKilled,
-            kill_schema,
-            kill_slot,
-        );
+        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema, kill_slot);
 
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider)).unwrap();
-        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider)).unwrap();
+        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+            .unwrap();
+        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider))
+            .unwrap();
 
         // Plan a JOIN query
         let sql = "SELECT d.tick, d.damage, k.entindex_victim \
                    FROM DamageEvent d \
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
             .indent(true)
@@ -943,10 +988,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_join_pipeline_properties() {
-        use datafusion::prelude::*;
         use crate::datafusion::pipeline_analysis::analyze_pipeline;
-        use crate::events::{EventType, event_schema};
         use crate::datafusion::table_providers::{EventTableProvider, new_receiver_slot};
+        use crate::events::{EventType, event_schema};
+        use datafusion::prelude::*;
 
         let config = SessionConfig::new()
             .with_target_partitions(1)
@@ -955,29 +1000,32 @@ mod tests {
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_slot = new_receiver_slot();
-        let damage_provider = EventTableProvider::new(
-            EventType::Damage,
-            damage_schema,
-            damage_slot,
-        );
+        let damage_provider =
+            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
         let kill_slot = new_receiver_slot();
-        let kill_provider = EventTableProvider::new(
-            EventType::HeroKilled,
-            kill_schema,
-            kill_slot,
-        );
+        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema, kill_slot);
 
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider)).unwrap();
-        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider)).unwrap();
+        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+            .unwrap();
+        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider))
+            .unwrap();
 
         let sql = "SELECT d.tick, d.damage, k.entindex_victim \
                    FROM DamageEvent d \
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let analysis = analyze_pipeline(&physical);
         eprintln!("\n{}\n", analysis.report());
@@ -1012,10 +1060,10 @@ mod tests {
     async fn test_join_damage_with_hero_killed_inner() {
         use std::time::Instant;
         let start = Instant::now();
-        
+
         let demo_bytes = load_demo_bytes().await.expect("load demo");
         eprintln!("[test] Demo loaded at {:?}", start.elapsed());
-        
+
         let entity_schemas = get_entity_schemas().await.expect("get schemas");
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
@@ -1030,7 +1078,8 @@ mod tests {
                 k.entindex_victim as killed_victim \
              FROM DamageEvent d \
              INNER JOIN HeroKilledEvent k ON d.tick = k.tick \
-             WHERE d.damage > 0".to_string(),
+             WHERE d.damage > 0"
+                .to_string(),
         ];
 
         eprintln!("[test] Running JOIN query at {:?}...", start.elapsed());
@@ -1043,7 +1092,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
         eprintln!("[test] Streams created at {:?}", start.elapsed());
 
         assert_eq!(streams.len(), 1, "Should have 1 stream");
@@ -1056,23 +1106,38 @@ mod tests {
             let batch = result.expect("batch");
             total_rows += batch.num_rows();
             if first_batch {
-                eprintln!("[test] FIRST batch at {:?}: {} rows", start.elapsed(), batch.num_rows());
+                eprintln!(
+                    "[test] FIRST batch at {:?}: {} rows",
+                    start.elapsed(),
+                    batch.num_rows()
+                );
                 first_batch = false;
             } else {
-                eprintln!("[test] batch: {} rows (total: {}) at {:?}", batch.num_rows(), total_rows, start.elapsed());
+                eprintln!(
+                    "[test] batch: {} rows (total: {}) at {:?}",
+                    batch.num_rows(),
+                    total_rows,
+                    start.elapsed()
+                );
             }
         }
 
-        eprintln!("[test] Total JOIN results: {} at {:?}", total_rows, start.elapsed());
+        eprintln!(
+            "[test] Total JOIN results: {} at {:?}",
+            total_rows,
+            start.elapsed()
+        );
         // JOIN may produce 0 rows if no damage happened on exact kill ticks, that's OK
     }
 
     #[tokio::test]
     async fn test_join_event_entity_plan_selection() {
         // Verify physical plan for event-entity JOIN
-        use datafusion::prelude::*;
+        use crate::datafusion::table_providers::{
+            EntityTableProvider, EventTableProvider, new_receiver_slot,
+        };
         use crate::events::{EventType, event_schema};
-        use crate::datafusion::table_providers::{EntityTableProvider, EventTableProvider, new_receiver_slot};
+        use datafusion::prelude::*;
 
         let config = SessionConfig::new()
             .with_target_partitions(1)
@@ -1082,18 +1147,28 @@ mod tests {
         // Create event table provider
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_slot = new_receiver_slot();
-        let damage_provider = EventTableProvider::new(
-            EventType::Damage,
-            damage_schema,
-            damage_slot,
-        );
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider)).unwrap();
+        let damage_provider =
+            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
+        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+            .unwrap();
 
         // Create entity table provider using EntityTableProvider
         let entity_schema = datafusion::arrow::datatypes::Schema::new(vec![
-            datafusion::arrow::datatypes::Field::new("tick", datafusion::arrow::datatypes::DataType::Int32, false),
-            datafusion::arrow::datatypes::Field::new("entity_index", datafusion::arrow::datatypes::DataType::Int32, false),
-            datafusion::arrow::datatypes::Field::new("delta_type", datafusion::arrow::datatypes::DataType::Utf8, false),
+            datafusion::arrow::datatypes::Field::new(
+                "tick",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+            datafusion::arrow::datatypes::Field::new(
+                "entity_index",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+            datafusion::arrow::datatypes::Field::new(
+                "delta_type",
+                datafusion::arrow::datatypes::DataType::Utf8,
+                false,
+            ),
         ]);
         let entity_slot = new_receiver_slot();
         let entity_provider = EntityTableProvider::new(
@@ -1101,14 +1176,23 @@ mod tests {
             std::sync::Arc::from("CCitadelPlayerPawn"),
             entity_slot,
         );
-        ctx.register_table("CCitadelPlayerPawn", std::sync::Arc::new(entity_provider)).unwrap();
+        ctx.register_table("CCitadelPlayerPawn", std::sync::Arc::new(entity_provider))
+            .unwrap();
 
         let sql = "SELECT d.tick, d.damage, p.entity_index \
                    FROM DamageEvent d \
                    INNER JOIN CCitadelPlayerPawn p ON d.tick = p.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
             .indent(true)
@@ -1166,7 +1250,8 @@ mod tests {
              FROM DamageEvent d \
              INNER JOIN CCitadelPlayerPawn p \
                 ON d.tick = p.tick \
-             LIMIT 20".to_string(),
+             LIMIT 20"
+                .to_string(),
         ];
 
         eprintln!("[test] Running event-entity JOIN query with LIMIT 100...");
@@ -1179,7 +1264,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1223,7 +1309,8 @@ mod tests {
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
         let queries = vec![
-            "SELECT tick, damage, entindex_attacker, entindex_victim FROM DamageEvent LIMIT 1000".to_string(),
+            "SELECT tick, damage, entindex_attacker, entindex_victim FROM DamageEvent LIMIT 1000"
+                .to_string(),
         ];
 
         eprintln!("[test] Running damage events query...");
@@ -1236,7 +1323,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1246,10 +1334,16 @@ mod tests {
             let batch = result.expect("batch");
             batch_count += 1;
             total_rows += batch.num_rows();
-            eprintln!("[test] Progress: {} batches, {} rows", batch_count, total_rows);
+            eprintln!(
+                "[test] Progress: {} batches, {} rows",
+                batch_count, total_rows
+            );
         }
 
-        eprintln!("[test] Query complete: {} batches, {} total rows", batch_count, total_rows);
+        eprintln!(
+            "[test] Query complete: {} batches, {} total rows",
+            batch_count, total_rows
+        );
         assert!(total_rows > 0, "Should have damage events");
     }
 
@@ -1278,9 +1372,7 @@ mod tests {
         let entity_schemas = get_entity_schemas().await.expect("get schemas");
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
-        let queries = vec![
-            "SELECT tick, damage, origin FROM DamageEvent LIMIT 1000".to_string(),
-        ];
+        let queries = vec!["SELECT tick, damage, origin FROM DamageEvent LIMIT 1000".to_string()];
 
         eprintln!("[test] Running query with nested fields...");
         let streams = StreamingQuerySession::run_queries(
@@ -1292,7 +1384,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1350,7 +1443,8 @@ mod tests {
                 ON d.tick = p.tick \
                 AND d.entindex_attacker = p.entity_index \
              WHERE d.damage > 50 \
-             LIMIT 100".to_string(),
+             LIMIT 100"
+                .to_string(),
         ];
 
         eprintln!("[test] Running event-entity JOIN query...");
@@ -1364,7 +1458,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1386,7 +1481,10 @@ mod tests {
         }
 
         let total_time = start.elapsed();
-        eprintln!("[test] Query complete: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Query complete: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
 
         assert!(total_rows > 0, "Should have JOIN results");
     }
@@ -1428,7 +1526,8 @@ mod tests {
              FROM DamageEvent d \
              INNER JOIN HeroKilledEvent k ON d.tick = k.tick \
              WHERE d.damage > 0 \
-             LIMIT 100".to_string(),
+             LIMIT 100"
+                .to_string(),
         ];
 
         eprintln!("[test] Running multi-event JOIN query...");
@@ -1442,7 +1541,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1464,7 +1564,10 @@ mod tests {
         }
 
         let total_time = start.elapsed();
-        eprintln!("[test] Complete: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1508,7 +1611,8 @@ mod tests {
              INNER JOIN HeroKilledEvent k \
                 ON d.tick = k.tick \
              WHERE d.damage > 0 \
-             LIMIT 30".to_string(),
+             LIMIT 30"
+                .to_string(),
         ];
 
         eprintln!("[test] Running triple-table JOIN query...");
@@ -1522,7 +1626,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1544,7 +1649,10 @@ mod tests {
         }
 
         let total_time = start.elapsed();
-        eprintln!("[test] Complete: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
     }
 
     fn print_batch_sample(batch: &RecordBatch, max_rows: usize) {
@@ -1558,7 +1666,8 @@ mod tests {
                     row_str.push_str(", ");
                 }
                 let field_name = schema.field(i).name();
-                let value = datafusion::arrow::util::display::array_value_to_string(col, row).unwrap_or_else(|_| "?".to_string());
+                let value = datafusion::arrow::util::display::array_value_to_string(col, row)
+                    .unwrap_or_else(|_| "?".to_string());
                 row_str.push_str(&format!("{}={}", field_name, value));
             }
             eprintln!("[test]   Row {}: {}", row, row_str);
@@ -1594,7 +1703,8 @@ mod tests {
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
         let queries = vec![
-            "SELECT tick, damage, entindex_attacker FROM DamageEvent WHERE damage > 0 LIMIT 100".to_string(),
+            "SELECT tick, damage, entindex_attacker FROM DamageEvent WHERE damage > 0 LIMIT 100"
+                .to_string(),
         ];
 
         eprintln!("[test] Running SIMPLE streaming query...");
@@ -1608,7 +1718,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1629,7 +1740,10 @@ mod tests {
         }
 
         let total_time = start.elapsed();
-        eprintln!("[test] Complete: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1648,7 +1762,10 @@ mod tests {
 
         match result {
             Ok(()) => eprintln!("[test] Completed successfully"),
-            Err(_) => panic!("[test] TIMEOUT after {} seconds", SINGLE_THREAD_TIMEOUT_SECS),
+            Err(_) => panic!(
+                "[test] TIMEOUT after {} seconds",
+                SINGLE_THREAD_TIMEOUT_SECS
+            ),
         }
     }
 
@@ -1660,7 +1777,8 @@ mod tests {
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
         let queries = vec![
-            "SELECT tick, damage, entindex_attacker FROM DamageEvent WHERE damage > 0 LIMIT 100".to_string(),
+            "SELECT tick, damage, entindex_attacker FROM DamageEvent WHERE damage > 0 LIMIT 100"
+                .to_string(),
         ];
 
         eprintln!("[test] Running SIMPLE streaming query (SINGLE THREAD)...");
@@ -1674,7 +1792,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         let mut stream = streams.into_iter().next().unwrap();
         let mut total_rows = 0;
@@ -1695,7 +1814,10 @@ mod tests {
         }
 
         let total_time = start.elapsed();
-        eprintln!("[test] Complete: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
     }
 
     // =========================================================================
@@ -1703,7 +1825,7 @@ mod tests {
     // =========================================================================
     //
     // These tests validate that UNION ALL queries return data from ALL branches.
-    // 
+    //
     // Previously, the code called `plan.execute(0, ctx)` which only executed
     // partition 0 of a multi-partition plan. For UNION ALL queries, this meant
     // only the first table's data was returned, causing:
@@ -1732,7 +1854,7 @@ mod tests {
 
         // UNION ALL query with 3 different entity types, each tagged with a source identifier.
         // This is similar to the npcs.sql query that exposed the bug.
-        // 
+        //
         // Using tick < 1000 to limit data volume since filter pushdown isn't implemented.
         let query = r#"
             SELECT tick, entity_index, 'Pawn' as source_type
@@ -1746,7 +1868,8 @@ mod tests {
             SELECT tick, entity_index, 'GameRules' as source_type
             FROM CCitadelGameRulesProxy
             WHERE tick < 1000
-        "#.to_string();
+        "#
+        .to_string();
 
         eprintln!("[test] Running query...");
         let streams = StreamingQuerySession::run_queries(
@@ -1758,7 +1881,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         assert_eq!(streams.len(), 1);
         let mut stream = streams.into_iter().next().unwrap();
@@ -1786,15 +1910,24 @@ mod tests {
             }
 
             if batch_count % 100 == 0 {
-                eprintln!("[test] Batch {}: {} rows, sources: {:?}", batch_count, total_rows, sources_seen);
+                eprintln!(
+                    "[test] Batch {}: {} rows, sources: {:?}",
+                    batch_count, total_rows, sources_seen
+                );
             }
         }
 
-        eprintln!("[test] Complete: {} batches, {} rows, sources: {:?}", batch_count, total_rows, sources_seen);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows, sources: {:?}",
+            batch_count, total_rows, sources_seen
+        );
         (total_rows, sources_seen)
     }
 
-    fn assert_union_all_entity_results(total_rows: usize, sources_seen: &std::collections::HashSet<String>) {
+    fn assert_union_all_entity_results(
+        total_rows: usize,
+        sources_seen: &std::collections::HashSet<String>,
+    ) {
         // CRITICAL: We must see data from ALL three UNION branches
         // With the old bug (execute partition 0 only), we would only see "Pawn"
         assert!(
@@ -1858,7 +1991,10 @@ mod tests {
                 assert_union_all_entity_results(total_rows, &sources_seen);
                 eprintln!("[test] PASSED: {} rows from {:?}", total_rows, sources_seen);
             }
-            Err(_) => panic!("[test] TIMEOUT after {} seconds", SINGLE_THREAD_TIMEOUT_SECS),
+            Err(_) => panic!(
+                "[test] TIMEOUT after {} seconds",
+                SINGLE_THREAD_TIMEOUT_SECS
+            ),
         }
     }
 
@@ -1881,7 +2017,8 @@ mod tests {
             SELECT tick, 'BulletHit' as event_type FROM BulletHitEvent WHERE tick < 10000
             UNION ALL
             SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent WHERE tick < 10000
-        "#.to_string();
+        "#
+        .to_string();
 
         eprintln!("[test] Running query...");
         let streams = StreamingQuerySession::run_queries(
@@ -1893,7 +2030,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_streams();
+        .expect("run_queries")
+        .into_streams();
 
         assert_eq!(streams.len(), 1);
         let mut stream = streams.into_iter().next().unwrap();
@@ -1921,15 +2059,24 @@ mod tests {
             }
 
             if batch_count % 100 == 0 {
-                eprintln!("[test] Batch {}: {} rows, event types: {:?}", batch_count, total_rows, event_types_seen);
+                eprintln!(
+                    "[test] Batch {}: {} rows, event types: {:?}",
+                    batch_count, total_rows, event_types_seen
+                );
             }
         }
 
-        eprintln!("[test] Complete: {} batches, {} rows, event types: {:?}", batch_count, total_rows, event_types_seen);
+        eprintln!(
+            "[test] Complete: {} batches, {} rows, event types: {:?}",
+            batch_count, total_rows, event_types_seen
+        );
         (total_rows, event_types_seen)
     }
 
-    fn assert_union_all_event_results(total_rows: usize, event_types_seen: &std::collections::HashSet<String>) {
+    fn assert_union_all_event_results(
+        total_rows: usize,
+        event_types_seen: &std::collections::HashSet<String>,
+    ) {
         // We should see data from multiple event types
         assert!(
             event_types_seen.len() >= 2,
@@ -1956,7 +2103,10 @@ mod tests {
         match result {
             Ok((total_rows, event_types_seen)) => {
                 assert_union_all_event_results(total_rows, &event_types_seen);
-                eprintln!("[test] PASSED: {} rows from {:?}", total_rows, event_types_seen);
+                eprintln!(
+                    "[test] PASSED: {} rows from {:?}",
+                    total_rows, event_types_seen
+                );
             }
             Err(_) => panic!("[test] TIMEOUT after {} seconds", UNION_ALL_TIMEOUT_SECS),
         }
@@ -1989,7 +2139,7 @@ mod tests {
 
         let demo_bytes = load_demo_bytes().await.expect("load demo");
         eprintln!("[test] Demo loaded at {:?}", start.elapsed());
-        
+
         let entity_schemas = get_entity_schemas().await.expect("get schemas");
         let packet_source = DemoFilePacketSource::new(demo_bytes);
 
@@ -1997,7 +2147,8 @@ mod tests {
             "SELECT d.tick, d.damage, k.entindex_victim as killed \
              FROM DamageEvent d \
              INNER JOIN HeroKilledEvent k ON d.tick = k.tick \
-             WHERE d.damage > 0".to_string(),
+             WHERE d.damage > 0"
+                .to_string(),
         ];
 
         eprintln!("[test] Running JOIN query at {:?}...", start.elapsed());
@@ -2010,7 +2161,8 @@ mod tests {
             StreamFormat::DemoFile,
         )
         .await
-        .expect("run_queries").into_parts();
+        .expect("run_queries")
+        .into_parts();
         eprintln!("[test] Streams created at {:?}", start.elapsed());
 
         let parser_finished = Arc::new(AtomicBool::new(false));
@@ -2047,18 +2199,24 @@ mod tests {
         let _ = parser_monitor.await;
 
         let total_time = start.elapsed();
-        eprintln!("[test] Total: {} batches, {} rows in {:?}", batch_count, total_rows, total_time);
+        eprintln!(
+            "[test] Total: {} batches, {} rows in {:?}",
+            batch_count, total_rows, total_time
+        );
 
         if let Some(first) = first_batch_time {
             eprintln!("[test] Time to first batch: {:?}", first);
-            eprintln!("[test] First batch arrived before parser finished: {}", first_batch_before_parser_finished);
-            
+            eprintln!(
+                "[test] First batch arrived before parser finished: {}",
+                first_batch_before_parser_finished
+            );
+
             assert!(
                 first.as_secs() < 5,
                 "First batch took {:?} - expected < 5s for streaming JOIN.",
                 first
             );
-            
+
             assert!(
                 first_batch_before_parser_finished,
                 "First batch arrived AFTER parser finished - streaming may be broken."
@@ -2083,9 +2241,15 @@ mod tests {
         match result {
             Ok((total_rows, event_types_seen)) => {
                 assert_union_all_event_results(total_rows, &event_types_seen);
-                eprintln!("[test] PASSED: {} rows from {:?}", total_rows, event_types_seen);
+                eprintln!(
+                    "[test] PASSED: {} rows from {:?}",
+                    total_rows, event_types_seen
+                );
             }
-            Err(_) => panic!("[test] TIMEOUT after {} seconds", SINGLE_THREAD_TIMEOUT_SECS),
+            Err(_) => panic!(
+                "[test] TIMEOUT after {} seconds",
+                SINGLE_THREAD_TIMEOUT_SECS
+            ),
         }
     }
 }

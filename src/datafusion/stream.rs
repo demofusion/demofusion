@@ -261,7 +261,10 @@ mod tests {
         assert_eq!(count1 + count2, 20);
         // Both should have received at least some (work stealing)
         // Note: In extreme cases one might get all, but statistically both should get some
-        eprintln!("Consumer 1 received: {}, Consumer 2 received: {}", count1, count2);
+        eprintln!(
+            "Consumer 1 received: {}, Consumer 2 received: {}",
+            count1, count2
+        );
     }
 
     #[tokio::test]

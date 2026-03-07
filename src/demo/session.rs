@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::physical_plan::{execute_stream, ExecutionPlan};
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
@@ -25,7 +25,7 @@ use crate::datafusion::streaming_stats::StreamingStats;
 use crate::datafusion::table_providers::EntityTableProvider;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
-use crate::visitor::{discover_schemas_from_demo, BatchingDemoVisitor, BatchingEntityDispatcher};
+use crate::visitor::{BatchingDemoVisitor, BatchingEntityDispatcher, discover_schemas_from_demo};
 
 type BatchReceiver = DistributionReceiver<RecordBatch>;
 type BatchSender = DistributionSender<RecordBatch>;
@@ -190,12 +190,8 @@ impl DemoFileSession {
     ///
     /// The query is validated immediately (SQL syntax and table existence),
     /// but data won't flow until [`start`](Self::start) is called.
-    pub async fn add_query(
-        &mut self,
-        sql: &str,
-    ) -> std::result::Result<QueryHandle, DemoError> {
-        let table_names =
-            extract_table_names(sql).map_err(|e| DemoError::Sql(e.to_string()))?;
+    pub async fn add_query(&mut self, sql: &str) -> std::result::Result<QueryHandle, DemoError> {
+        let table_names = extract_table_names(sql).map_err(|e| DemoError::Sql(e.to_string()))?;
 
         let entity_types: Vec<Arc<str>> = table_names
             .iter()
@@ -256,10 +252,8 @@ impl DemoFileSession {
             .map_err(|e| DemoError::DataFusion(e.to_string()))?;
 
         let analysis = analyze_pipeline(&physical_plan);
-        if analysis.has_pipeline_breakers() {
-            if self.reject_pipeline_breakers {
-                return Err(DemoError::PipelineBreaker(analysis.report()));
-            }
+        if analysis.has_pipeline_breakers() && self.reject_pipeline_breakers {
+            return Err(DemoError::PipelineBreaker(analysis.report()));
         }
 
         let (result_tx, result_rx) = mpsc::unbounded_channel();

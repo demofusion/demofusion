@@ -55,7 +55,11 @@ impl BatchingEntityDispatcher {
             })
             .collect();
 
-        Self { senders, _batch_size: batch_size, stats }
+        Self {
+            senders,
+            _batch_size: batch_size,
+            stats,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -91,12 +95,15 @@ impl BatchingEntityDispatcher {
             let mut failed_indices = Vec::new();
 
             for (idx, swb) in sender_list.iter_mut().enumerate() {
-                swb.builder.append_entity(tick, entity_index, delta_header, entity);
+                swb.builder
+                    .append_entity(tick, entity_index, delta_header, entity);
 
                 if swb.builder.should_flush() {
-                    let batch = swb.builder.flush()
+                    let batch = swb
+                        .builder
+                        .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
-                    
+
                     // Record batch stats before sending
                     if let Some(stats) = &self.stats {
                         stats.record_batch_sent(batch.num_rows() as u64);
@@ -110,7 +117,7 @@ impl BatchingEntityDispatcher {
                         failed_indices.push(idx);
                         continue;
                     }
-                    
+
                     // Yield after sending a batch to allow consumers to process.
                     // This is the natural backpressure point - we've just produced data.
                     tokio::task::yield_now().await;
@@ -133,9 +140,11 @@ impl BatchingEntityDispatcher {
 
             for (idx, swb) in sender_list.iter_mut().enumerate() {
                 if swb.builder.has_data() {
-                    let batch = swb.builder.flush()
+                    let batch = swb
+                        .builder
+                        .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
-                    
+
                     // Record final batch stats
                     if let Some(stats) = &self.stats {
                         stats.record_batch_sent(batch.num_rows() as u64);
@@ -212,7 +221,7 @@ mod tests {
 
         let sender = senders[0].clone();
         drop(senders);
-        
+
         let rx = receivers.pop().unwrap();
 
         // Create a batch
@@ -224,8 +233,9 @@ mod tests {
                 Arc::new(datafusion::arrow::array::StringArray::from(vec!["created"])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![100])),
             ],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         // Send should succeed
         assert!(sender.send(batch.clone()).await.is_ok());
         assert_eq!(rx.queue_len(), 1);

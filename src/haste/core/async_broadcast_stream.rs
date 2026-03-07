@@ -12,8 +12,8 @@ use valveprotos::common::{
     CDemoClassInfo, CDemoFullPacket, CDemoPacket, CDemoSendTables, EDemoCommands,
 };
 
-use super::demostream::{CmdHeader, DecodeCmdError, ReadCmdError, ReadCmdHeaderError};
 use super::async_demostream::AsyncDemoStream;
+use super::demostream::{CmdHeader, DecodeCmdError, ReadCmdError, ReadCmdHeaderError};
 
 const BROADCAST_CMD_HEADER_SIZE: u8 = 10; // 1 + 4 + 1 + 4
 

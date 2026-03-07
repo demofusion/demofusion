@@ -9,13 +9,13 @@ use valveprotos::common::{
 
 use super::async_demostream::AsyncDemoStream;
 use super::bitreader::BitReader;
-use super::demofile::{DemoHeaderError, DEMO_RECORD_BUFFER_SIZE};
+use super::demofile::{DEMO_RECORD_BUFFER_SIZE, DemoHeaderError};
 use super::demostream::{CmdHeader, DemoStream, SeekableDemoStream};
 use super::entities::{DeltaHeader, Entity, EntityContainer};
 use super::entityclasses::EntityClasses;
 use super::fielddecoder::FieldDecodeContext;
 use super::flattenedserializers::FlattenedSerializerContainer;
-use super::instancebaseline::{InstanceBaseline, INSTANCE_BASELINE_TABLE_NAME};
+use super::instancebaseline::{INSTANCE_BASELINE_TABLE_NAME, InstanceBaseline};
 use super::stringtables::StringTableContainer;
 
 // as can be observed when dumping commands. also as specified in clarity
@@ -604,7 +604,8 @@ impl<D: SeekableDemoStream, V: Visitor> Parser<D, V> {
     }
 
     fn reset(&mut self) -> Result<(), io::Error> {
-        self.inner.demo_stream
+        self.inner
+            .demo_stream
             .seek(SeekFrom::Start(self.inner.demo_stream.start_position()))?;
 
         self.inner.ctx.clear();
@@ -652,7 +653,8 @@ impl<D: SeekableDemoStream, V: Visitor> Parser<D, V> {
                 if is_full_packet {
                     let cmd_body = notnotself.inner.demo_stream.read_cmd(cmd_header)?;
                     notnotself
-                        .inner.visitor
+                        .inner
+                        .visitor
                         .on_cmd(&notnotself.inner.ctx, cmd_header, cmd_body)
                         .await?;
 
@@ -667,7 +669,11 @@ impl<D: SeekableDemoStream, V: Visitor> Parser<D, V> {
                     }
                     notnotself.inner.handle_cmd_full_packet(cmd).await?;
                     // NOTE: there's absolutely no reason to check if tick changed because it changed.
-                    notnotself.inner.visitor.on_tick_end(&notnotself.inner.ctx).await?;
+                    notnotself
+                        .inner
+                        .visitor
+                        .on_tick_end(&notnotself.inner.ctx)
+                        .await?;
 
                     did_handle_last_full_packet = !has_full_packet_ahead;
 
@@ -742,9 +748,7 @@ impl<D: AsyncDemoStream, V: Visitor> AsyncStreamingParser<D, V> {
                     self.ctx.prev_tick = self.ctx.tick;
                     self.ctx.tick = cmd_header.tick;
 
-                    if reset_on_full_packet
-                        && cmd_header.cmd == EDemoCommands::DemFullPacket
-                    {
+                    if reset_on_full_packet && cmd_header.cmd == EDemoCommands::DemFullPacket {
                         self.ctx.entities.clear();
                     }
 
@@ -859,8 +863,7 @@ impl<D: AsyncDemoStream, V: Visitor> AsyncStreamingParser<D, V> {
                         self.ctx.tick_interval = tick_interval;
 
                         let ratio = DEFAULT_TICK_INTERVAL / tick_interval;
-                        self.ctx.full_packet_interval =
-                            DEFAULT_FULL_PACKET_INTERVAL * ratio as i32;
+                        self.ctx.full_packet_interval = DEFAULT_FULL_PACKET_INTERVAL * ratio as i32;
 
                         self.field_decode_ctx.tick_interval = tick_interval;
                     }

@@ -8,11 +8,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use tracing::{trace, debug, warn};
+use tracing::{debug, trace, warn};
 
 use crate::datafusion::distributor_channels::DistributionSender;
 use crate::datafusion::streaming_stats::StreamingStats;
-use crate::events::{decode_event, EventBatchBuilder, EventType};
+use crate::events::{EventBatchBuilder, EventType, decode_event};
 
 use super::arrow_visitor::ArrowVisitorError;
 
@@ -57,7 +57,11 @@ impl BatchingEventDispatcher {
             })
             .collect();
 
-        Self { senders, _batch_size: batch_size, stats }
+        Self {
+            senders,
+            _batch_size: batch_size,
+            stats,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -75,36 +79,38 @@ impl BatchingEventDispatcher {
         packet_type: u32,
         data: &[u8],
     ) -> Result<(), ArrowVisitorError> {
-        if let Some(sender_list) = self.senders.get_mut(&packet_type) {
-            if let Some(event) = decode_event(packet_type, data) {
-                // Record row production (once per event, not per sender)
-                if let Some(stats) = &self.stats {
-                    stats.record_rows_produced(1);
-                }
+        if let Some(sender_list) = self.senders.get_mut(&packet_type)
+            && let Some(event) = decode_event(packet_type, data)
+        {
+            // Record row production (once per event, not per sender)
+            if let Some(stats) = &self.stats {
+                stats.record_rows_produced(1);
+            }
 
-                for swb in sender_list.iter_mut() {
-                    swb.builder.append(tick, &event);
+            for swb in sender_list.iter_mut() {
+                swb.builder.append(tick, &event);
 
-                    if swb.builder.should_flush() {
-                        let batch = swb.builder.flush()
-                            .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
-                        
-                        // Record batch stats before sending
-                        if let Some(stats) = &self.stats {
-                            stats.record_batch_sent(batch.num_rows() as u64);
-                            if swb.sender.is_gate_blocked() {
-                                stats.record_gate_blocked();
-                            }
+                if swb.builder.should_flush() {
+                    let batch = swb
+                        .builder
+                        .flush()
+                        .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
+
+                    // Record batch stats before sending
+                    if let Some(stats) = &self.stats {
+                        stats.record_batch_sent(batch.num_rows() as u64);
+                        if swb.sender.is_gate_blocked() {
+                            stats.record_gate_blocked();
                         }
-
-                        swb.sender
-                            .send(batch)
-                            .await
-                            .map_err(|_| ArrowVisitorError::ChannelClosed)?;
-                        
-                        // Yield after sending a batch to allow consumers to process.
-                        tokio::task::yield_now().await;
                     }
+
+                    swb.sender
+                        .send(batch)
+                        .await
+                        .map_err(|_| ArrowVisitorError::ChannelClosed)?;
+
+                    // Yield after sending a batch to allow consumers to process.
+                    tokio::task::yield_now().await;
                 }
             }
         }
@@ -115,24 +121,26 @@ impl BatchingEventDispatcher {
     pub async fn flush_all(&mut self) -> Result<(), ArrowVisitorError> {
         let mut total_flushed = 0;
         let mut total_rows = 0;
-        
+
         for (message_id, sender_list) in self.senders.iter_mut() {
             for swb in sender_list.iter_mut() {
                 if swb.builder.has_data() {
-                    let batch = swb.builder.flush()
+                    let batch = swb
+                        .builder
+                        .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
-                    
+
                     let num_rows = batch.num_rows();
                     total_rows += num_rows;
                     total_flushed += 1;
-                    
+
                     debug!(
                         target: "demofusion::dispatcher",
                         message_id,
                         num_rows,
                         "flush_all: flushing partial batch"
                     );
-                    
+
                     // Record final batch stats
                     if let Some(stats) = &self.stats {
                         stats.record_batch_sent(num_rows as u64);
@@ -155,14 +163,14 @@ impl BatchingEventDispatcher {
                 }
             }
         }
-        
+
         debug!(
             target: "demofusion::dispatcher",
             total_flushed,
             total_rows,
             "flush_all: complete"
         );
-        
+
         Ok(())
     }
 }

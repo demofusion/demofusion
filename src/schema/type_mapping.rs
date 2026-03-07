@@ -1,5 +1,5 @@
-use datafusion::arrow::datatypes::DataType;
 use crate::haste::fieldvalue::FieldValue;
+use datafusion::arrow::datatypes::DataType;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FieldType {

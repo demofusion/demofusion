@@ -4,8 +4,8 @@ use std::fmt::{self};
 use std::sync::Arc;
 
 use dungers::bitbuf::BitError;
-use hashbrown::hash_map::Entry;
 use hashbrown::HashMap;
+use hashbrown::hash_map::Entry;
 use nohash::NoHashHasher;
 
 use super::bitreader::BitReader;
@@ -476,6 +476,7 @@ impl EntityContainer {
         Ok(index)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn handle_create_with_filter<F>(
         &mut self,
         index: i32,

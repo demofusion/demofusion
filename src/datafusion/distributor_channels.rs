@@ -64,6 +64,7 @@
 //! - Track: `total_items` across all channels
 //! - Block sends when: `total_items >= GLOBAL_LIMIT`
 //! - Resume when: `total_items < GLOBAL_LIMIT`
+//!
 //! This is NOT currently implemented but documented here as a potential future direction.
 
 use std::{
@@ -72,8 +73,8 @@ use std::{
     ops::DerefMut,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
 };
@@ -454,7 +455,7 @@ type SharedGate = Arc<Gate>;
 mod tests {
     use std::sync::atomic::AtomicBool;
 
-    use futures::{task::ArcWake, FutureExt};
+    use futures::{FutureExt, task::ArcWake};
 
     use super::*;
 

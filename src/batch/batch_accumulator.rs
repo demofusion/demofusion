@@ -253,32 +253,32 @@ impl BatchAccumulator {
         let expected_len = self.row_count;
 
         // Validate base column lengths
-        if let Some(ref builder) = self.tick_builder {
-            if builder.len() != expected_len {
-                return Err(Source2DfError::Schema(format!(
-                    "tick column has {} rows, expected {}",
-                    builder.len(),
-                    expected_len
-                )));
-            }
+        if let Some(ref builder) = self.tick_builder
+            && builder.len() != expected_len
+        {
+            return Err(Source2DfError::Schema(format!(
+                "tick column has {} rows, expected {}",
+                builder.len(),
+                expected_len
+            )));
         }
-        if let Some(ref builder) = self.entity_index_builder {
-            if builder.len() != expected_len {
-                return Err(Source2DfError::Schema(format!(
-                    "entity_index column has {} rows, expected {}",
-                    builder.len(),
-                    expected_len
-                )));
-            }
+        if let Some(ref builder) = self.entity_index_builder
+            && builder.len() != expected_len
+        {
+            return Err(Source2DfError::Schema(format!(
+                "entity_index column has {} rows, expected {}",
+                builder.len(),
+                expected_len
+            )));
         }
-        if let Some(ref builder) = self.delta_type_builder {
-            if builder.len() != expected_len {
-                return Err(Source2DfError::Schema(format!(
-                    "delta_type column has {} rows, expected {}",
-                    builder.len(),
-                    expected_len
-                )));
-            }
+        if let Some(ref builder) = self.delta_type_builder
+            && builder.len() != expected_len
+        {
+            return Err(Source2DfError::Schema(format!(
+                "delta_type column has {} rows, expected {}",
+                builder.len(),
+                expected_len
+            )));
         }
 
         // Validate field builder lengths
@@ -492,14 +492,16 @@ mod tests {
         let mut acc = BatchAccumulator::new(&schema, Some(3)); // Small batch size
 
         // First two don't trigger flush
-        assert!(acc
-            .append_delete_or_leave(1, 1, "update")
-            .unwrap()
-            .is_none());
-        assert!(acc
-            .append_delete_or_leave(2, 2, "update")
-            .unwrap()
-            .is_none());
+        assert!(
+            acc.append_delete_or_leave(1, 1, "update")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            acc.append_delete_or_leave(2, 2, "update")
+                .unwrap()
+                .is_none()
+        );
 
         // Third triggers auto-flush
         let result = acc.append_delete_or_leave(3, 3, "update").unwrap();

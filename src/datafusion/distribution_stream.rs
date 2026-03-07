@@ -12,7 +12,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::Result as DfResult;
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
-use tracing::{trace, debug};
+use tracing::{debug, trace};
 
 use super::distributor_channels::DistributionReceiver;
 
@@ -91,9 +91,7 @@ mod tests {
     use std::sync::Arc;
 
     fn make_test_schema() -> SchemaRef {
-        Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int32, false),
-        ]))
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]))
     }
 
     fn make_test_batch(schema: &SchemaRef, values: &[i32]) -> RecordBatch {

@@ -200,25 +200,29 @@ impl<P: PacketSource> AsyncDemoStream for PacketChannelDemoStream<P> {
 
         self.ensure_bytes(size).await.map_err(|e| match e {
             ReadCmdHeaderError::IoError(io_err) => ReadCmdError::IoError(io_err),
-            _ => ReadCmdError::IoError(io::Error::new(io::ErrorKind::Other, "ensure bytes failed")),
+            _ => ReadCmdError::IoError(io::Error::other("ensure bytes failed")),
         })?;
 
         // Copy data to body_buf first to avoid borrow issues
         self.body_buf.clear();
-        self.body_buf.extend_from_slice(&self.current[self.offset..self.offset + size]);
+        self.body_buf
+            .extend_from_slice(&self.current[self.offset..self.offset + size]);
         self.offset += size;
 
         if cmd_header.body_compressed {
             // Decompress with snappy
-            let uncompressed_size = snap::raw::decompress_len(&self.body_buf)
-                .map_err(|e| ReadCmdError::IoError(io::Error::new(io::ErrorKind::InvalidData, e)))?;
-            
+            let uncompressed_size = snap::raw::decompress_len(&self.body_buf).map_err(|e| {
+                ReadCmdError::IoError(io::Error::new(io::ErrorKind::InvalidData, e))
+            })?;
+
             self.decompress_buf.resize(uncompressed_size, 0);
             let mut decoder = SnapDecoder::new();
             decoder
                 .decompress(&self.body_buf, &mut self.decompress_buf)
-                .map_err(|e| ReadCmdError::IoError(io::Error::new(io::ErrorKind::InvalidData, e)))?;
-            
+                .map_err(|e| {
+                    ReadCmdError::IoError(io::Error::new(io::ErrorKind::InvalidData, e))
+                })?;
+
             // Swap buffers so decompress_buf becomes body_buf
             std::mem::swap(&mut self.body_buf, &mut self.decompress_buf);
         }

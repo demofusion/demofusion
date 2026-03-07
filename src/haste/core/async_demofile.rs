@@ -2,8 +2,8 @@ use prost::Message;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use valveprotos::common::{CDemoClassInfo, CDemoFullPacket, CDemoPacket, CDemoSendTables};
 
-use super::async_demostream::{read_cmd_header_async, AsyncDemoStream};
-use super::demofile::{DemoHeader, DemoHeaderError, DEMO_RECORD_BUFFER_SIZE};
+use super::async_demostream::{AsyncDemoStream, read_cmd_header_async};
+use super::demofile::{DEMO_RECORD_BUFFER_SIZE, DemoHeader, DemoHeaderError};
 use super::demostream::{CmdHeader, DecodeCmdError, ReadCmdError, ReadCmdHeaderError};
 
 const DEMO_HEADER_ID_SIZE: usize = 8;

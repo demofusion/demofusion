@@ -47,7 +47,7 @@ impl BatchingDemoVisitor {
         schemas: &[(u64, crate::schema::EntitySchema)],
     ) -> Self {
         let tracked_hashes = schemas.iter().map(|(hash, _)| *hash).collect();
-        
+
         Self {
             entity_dispatcher,
             event_dispatcher,
@@ -58,11 +58,11 @@ impl BatchingDemoVisitor {
 
     pub async fn flush_all(&mut self) -> std::result::Result<(), ArrowVisitorError> {
         self.entity_dispatcher.flush_all().await?;
-        
+
         if let Some(ref mut event_dispatcher) = self.event_dispatcher {
             event_dispatcher.flush_all().await?;
         }
-        
+
         Ok(())
     }
 
@@ -70,11 +70,12 @@ impl BatchingDemoVisitor {
     /// When this returns false, all consumers have disconnected and parsing can stop.
     fn has_active_senders(&self) -> bool {
         let entity_active = self.entity_dispatcher.has_active_senders();
-        let event_active = self.event_dispatcher
+        let event_active = self
+            .event_dispatcher
             .as_ref()
             .map(|d| d.has_active_senders())
             .unwrap_or(false);
-        
+
         entity_active || event_active
     }
 }
@@ -95,12 +96,12 @@ impl Visitor for BatchingDemoVisitor {
         self.entity_dispatcher
             .send(ctx.tick(), delta_header, entity)
             .await?;
-        
+
         // Check if all consumers have disconnected (both entity and event)
         if !self.has_active_senders() {
             return Err(ArrowVisitorError::ChannelClosed);
         }
-        
+
         Ok(())
     }
 
@@ -113,26 +114,23 @@ impl Visitor for BatchingDemoVisitor {
         if let Some(ref mut event_dispatcher) = self.event_dispatcher {
             event_dispatcher.send(ctx.tick(), packet_type, data).await?;
         }
-        
+
         // Check if all consumers have disconnected (both entity and event)
         if !self.has_active_senders() {
             return Err(ArrowVisitorError::ChannelClosed);
         }
-        
+
         Ok(())
     }
 
-    async fn on_tick_end(
-        &mut self,
-        ctx: &Context,
-    ) -> std::result::Result<(), Self::Error> {
+    async fn on_tick_end(&mut self, ctx: &Context) -> std::result::Result<(), Self::Error> {
         let tick = ctx.tick();
-        
+
         if tick - self.last_flush_tick >= FLUSH_INTERVAL_TICKS {
             self.flush_all().await?;
             self.last_flush_tick = tick;
         }
-        
+
         Ok(())
     }
 }

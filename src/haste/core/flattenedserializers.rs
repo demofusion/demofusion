@@ -4,8 +4,8 @@ use std::sync::Arc;
 use dungers::bitbuf::BitError;
 use dungers::varint;
 use dungers::varint::VarintError;
-use hashbrown::hash_map::Values;
 use hashbrown::HashMap;
+use hashbrown::hash_map::Values;
 use nohash::NoHashHasher;
 use prost::Message;
 use valveprotos::common::{
@@ -14,7 +14,7 @@ use valveprotos::common::{
 };
 
 use super::fieldmetadata::{
-    get_field_metadata, FieldMetadata, FieldMetadataError, FieldSpecialDescriptor,
+    FieldMetadata, FieldMetadataError, FieldSpecialDescriptor, get_field_metadata,
 };
 use super::fxhash;
 

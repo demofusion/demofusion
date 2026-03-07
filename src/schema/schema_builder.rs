@@ -4,7 +4,7 @@ use std::sync::Arc;
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
 use super::symbol_table::SymbolTable;
-use super::type_mapping::{parse_var_type, FieldType};
+use super::type_mapping::{FieldType, parse_var_type};
 use crate::error::Result;
 
 #[derive(Clone, Debug)]

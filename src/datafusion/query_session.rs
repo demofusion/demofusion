@@ -71,22 +71,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use tokio::task::JoinHandle;
-use datafusion::physical_plan::{execute_stream, SendableRecordBatchStream};
+use datafusion::physical_plan::{SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
+use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
 use crate::datafusion::distributor_channels::{self, DistributionSender};
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
-use crate::datafusion::table_providers::{BatchReceiver, EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot};
+use crate::datafusion::table_providers::{
+    BatchReceiver, EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot,
+};
 use crate::error::{Result, Source2DfError};
-use crate::events::{event_schema, EventType};
+use crate::events::{EventType, event_schema};
 use crate::haste::core::packet_source::PacketSource;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
 
 type BatchSender = DistributionSender<RecordBatch>;
-
 
 /// Stream format for demo data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,14 +103,12 @@ fn streaming_session_context() -> SessionContext {
     let config = SessionConfig::new()
         .with_target_partitions(1)
         .with_coalesce_batches(false);
-    
-    let ctx = SessionContext::new_with_config(config);
-    
+
     // TODO: Re-enable tick_bin UDF after fixing for DataFusion 52
     // Register UDFs that preserve monotonicity for streaming queries
     // ctx.register_udf(make_tick_bin_udf());
-    
-    ctx
+
+    SessionContext::new_with_config(config)
 }
 
 /// Result of running streaming queries, containing both the record batch streams
@@ -126,15 +125,15 @@ pub struct QueryStreams {
 
 impl QueryStreams {
     /// Consume this struct and return just the streams.
-    /// 
+    ///
     /// **Warning**: This drops the parser handle, meaning parser errors will be silently ignored.
     /// Prefer using `into_parts()` and awaiting the handle after streams complete.
     pub fn into_streams(self) -> Vec<SendableRecordBatchStream> {
         self.streams
     }
-    
+
     /// Consume this struct and return both the streams and the parser handle.
-    /// 
+    ///
     /// After consuming all streams, await the handle to check for parser errors:
     /// ```ignore
     /// let (streams, parser_handle) = query_streams.into_parts();
@@ -148,7 +147,7 @@ impl QueryStreams {
     }
 
     /// Returns a reference to the streaming statistics.
-    /// 
+    ///
     /// Stats can be read while streaming is active to monitor:
     /// - `rows_produced`: Total rows parsed
     /// - `batches_sent`: RecordBatches dispatched to queries
@@ -179,10 +178,10 @@ impl StreamingQuerySession {
         format: StreamFormat,
     ) -> Result<QueryStreams> {
         let batch_size = batch_size.unwrap_or(DEFAULT_LIVE_BATCH_SIZE);
-        
+
         // Create stats tracker for in-flight monitoring
         let stats = crate::datafusion::streaming_stats::StreamingStats::new();
-        
+
         // Phase 1: Plan all queries, collect used slots
         //
         // We use SQL parsing to determine which entity types each query needs,
@@ -195,15 +194,15 @@ impl StreamingQuerySession {
 
         for (query_idx, sql) in queries.iter().enumerate() {
             let ctx = streaming_session_context();
-            
+
             // Register memory tables first (static tables for JOINs)
             for (name, batch) in &memory_tables {
                 ctx.register_batch(name, batch.clone())?;
             }
-            
+
             // Parse SQL to find which tables this query uses
             let table_names = extract_table_names(sql)?;
-            
+
             // Filter entity types (runtime-discovered schemas)
             // Note: HashMap<Arc<str>, _> supports lookup by &str via Borrow trait
             let query_entity_types: Vec<Arc<str>> = table_names
@@ -241,19 +240,16 @@ impl StreamingQuerySession {
             // Register event table providers
             let mut query_event_slots: HashMap<EventType, ReceiverSlot> = HashMap::new();
             for event_type in &query_event_types {
-                let schema = event_schema(event_type.table_name())
-                    .ok_or_else(|| Source2DfError::Schema(format!(
+                let schema = event_schema(event_type.table_name()).ok_or_else(|| {
+                    Source2DfError::Schema(format!(
                         "No schema found for event type: {}",
                         event_type.table_name()
-                    )))?;
+                    ))
+                })?;
                 let slot = new_receiver_slot();
                 query_event_slots.insert(*event_type, slot.clone());
 
-                let provider = EventTableProvider::new(
-                    *event_type,
-                    schema,
-                    slot,
-                );
+                let provider = EventTableProvider::new(*event_type, schema, slot);
                 ctx.register_table(event_type.table_name(), Arc::new(provider))?;
             }
 
@@ -271,8 +267,7 @@ impl StreamingQuerySession {
                 eprintln!(
                     "[query_session] WARNING: Query {} contains pipeline breakers: {:?}. \
                      Data will not stream until source closes.",
-                    query_idx,
-                    breaker_names
+                    query_idx, breaker_names
                 );
             }
 
@@ -292,27 +287,29 @@ impl StreamingQuerySession {
         //
         // Distribution channels solve the JOIN deadlock problem. With bounded channels:
         //   - Parser blocks on send() to full channel A
-        //   - JOIN waits for data on empty channel B  
+        //   - JOIN waits for data on empty channel B
         //   - Parser can't produce for B because it's blocked on A → DEADLOCK
         //
-        // Distribution channels have a global gate that blocks sends ONLY when ALL 
+        // Distribution channels have a global gate that blocks sends ONLY when ALL
         // channels are non-empty. This ensures the parser can always send to whichever
         // channel the JOIN is currently draining, preventing deadlock.
         //
         // Additionally, per-channel high-water marks provide memory backpressure.
-        
+
         // Count total channels needed (all entity channels + all event channels)
         let entity_channel_count: usize = used_entity_slots.values().map(|v| v.len()).sum();
         let event_channel_count: usize = used_event_slots.values().map(|v| v.len()).sum();
         let total_channels = entity_channel_count + event_channel_count;
 
         // Create all channels with a shared gate
-        let (all_senders, all_receivers) = distributor_channels::channels::<RecordBatch>(total_channels);
+        let (all_senders, all_receivers) =
+            distributor_channels::channels::<RecordBatch>(total_channels);
         let mut sender_iter = all_senders.into_iter();
         let mut receiver_idx = 0;
 
         // Assign entity channels - keyed by serializer_hash for dispatcher lookup
-        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> = HashMap::new();
+        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> =
+            HashMap::new();
         let mut entity_slot_receiver_indices: Vec<(ReceiverSlot, usize)> = Vec::new();
 
         for (entity_type, slots) in &used_entity_slots {
@@ -329,7 +326,8 @@ impl StreamingQuerySession {
         }
 
         // Assign event channels - keyed by message_id for dispatcher lookup
-        let mut event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>> = HashMap::new();
+        let mut event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>> =
+            HashMap::new();
         let mut event_slot_receiver_indices: Vec<(ReceiverSlot, usize)> = Vec::new();
 
         for (event_type, slots) in &used_event_slots {
@@ -353,45 +351,43 @@ impl StreamingQuerySession {
 
         // Phase 3: Start parser with batching dispatchers
         let parser_handle: JoinHandle<Result<()>> = match format {
-            StreamFormat::Broadcast => {
-                tokio::spawn(run_parser_broadcast(
-                    packet_source,
-                    schemas,
-                    entity_dispatcher_senders,
-                    event_dispatcher_senders,
-                    batch_size,
-                    Arc::clone(&stats),
-                ))
-            }
-            StreamFormat::DemoFile => {
-                tokio::spawn(run_parser_demo(
-                    packet_source,
-                    schemas,
-                    entity_dispatcher_senders,
-                    event_dispatcher_senders,
-                    batch_size,
-                    Arc::clone(&stats),
-                ))
-            }
+            StreamFormat::Broadcast => tokio::spawn(run_parser_broadcast(
+                packet_source,
+                schemas,
+                entity_dispatcher_senders,
+                event_dispatcher_senders,
+                batch_size,
+                Arc::clone(&stats),
+            )),
+            StreamFormat::DemoFile => tokio::spawn(run_parser_demo(
+                packet_source,
+                schemas,
+                entity_dispatcher_senders,
+                event_dispatcher_senders,
+                batch_size,
+                Arc::clone(&stats),
+            )),
         };
 
         // Phase 4: Fill receiver slots (unblocks parser as queries start pulling)
         // Convert receivers Vec to a HashMap for indexed access, then extract by index
-        let mut receivers_by_idx: HashMap<usize, BatchReceiver> = all_receivers
-            .into_iter()
-            .enumerate()
-            .collect();
-        
+        let mut receivers_by_idx: HashMap<usize, BatchReceiver> =
+            all_receivers.into_iter().enumerate().collect();
+
         for (slot, idx) in entity_slot_receiver_indices {
-            let rx = receivers_by_idx.remove(&idx)
+            let rx = receivers_by_idx
+                .remove(&idx)
                 .expect("receiver index mismatch");
             let old = slot.lock().replace(rx);
             if old.is_some() {
-                return Err(Source2DfError::Schema("Entity slot already set".to_string()));
+                return Err(Source2DfError::Schema(
+                    "Entity slot already set".to_string(),
+                ));
             }
         }
         for (slot, idx) in event_slot_receiver_indices {
-            let rx = receivers_by_idx.remove(&idx)
+            let rx = receivers_by_idx
+                .remove(&idx)
                 .expect("receiver index mismatch");
             let old = slot.lock().replace(rx);
             if old.is_some() {
@@ -443,7 +439,7 @@ async fn run_parser_broadcast<P: PacketSource + 'static>(
         batch_size,
         Some(Arc::clone(&stats)),
     );
-    
+
     let event_dispatcher = if event_senders.is_empty() {
         None
     } else {
@@ -455,7 +451,7 @@ async fn run_parser_broadcast<P: PacketSource + 'static>(
     };
 
     let visitor = BatchingDemoVisitor::new(entity_dispatcher, event_dispatcher, &schemas);
-    
+
     let mut parser = AsyncStreamingParser::from_stream_with_visitor(broadcast_stream, visitor)
         .map_err(|e| Source2DfError::Haste(e.to_string()))?;
 
@@ -501,7 +497,7 @@ async fn run_parser_demo<P: PacketSource + 'static>(
         batch_size,
         Some(Arc::clone(&stats)),
     );
-    
+
     let event_dispatcher = if event_senders.is_empty() {
         None
     } else {
@@ -513,26 +509,32 @@ async fn run_parser_demo<P: PacketSource + 'static>(
     };
 
     let visitor = BatchingDemoVisitor::new(entity_dispatcher, event_dispatcher, &schemas);
-    
+
     let mut parser = AsyncStreamingParser::from_stream_with_visitor(demo_stream, visitor)
         .map_err(|e| Source2DfError::Haste(e.to_string()))?;
 
     // Run parser to completion - errors are expected on stream close
     debug!(target: "demofusion::parser", "run_parser_demo: running parser to end");
     let parse_result = parser.run_to_end().await;
-    
+
     match &parse_result {
-        Ok(()) => debug!(target: "demofusion::parser", "run_parser_demo: parser completed successfully"),
-        Err(e) => debug!(target: "demofusion::parser", error = %e, "run_parser_demo: parser ended with error"),
+        Ok(()) => {
+            debug!(target: "demofusion::parser", "run_parser_demo: parser completed successfully")
+        }
+        Err(e) => {
+            debug!(target: "demofusion::parser", error = %e, "run_parser_demo: parser ended with error")
+        }
     }
 
     // Flush any remaining batched data
     debug!(target: "demofusion::parser", "run_parser_demo: flushing remaining data");
     let mut visitor = parser.into_visitor();
     let flush_result = visitor.flush_all().await;
-    
+
     match &flush_result {
-        Ok(()) => debug!(target: "demofusion::parser", "run_parser_demo: flush completed successfully"),
+        Ok(()) => {
+            debug!(target: "demofusion::parser", "run_parser_demo: flush completed successfully")
+        }
         Err(e) => warn!(target: "demofusion::parser", error = ?e, "run_parser_demo: flush failed"),
     }
 
@@ -573,11 +575,8 @@ mod tests {
     fn test_entity_table_provider_creation() {
         let schema = make_test_entity_schema("TestEntity", 123);
         let slot = new_receiver_slot();
-        let provider = EntityTableProvider::new(
-            schema.arrow_schema.clone(),
-            Arc::from("TestEntity"),
-            slot,
-        );
+        let provider =
+            EntityTableProvider::new(schema.arrow_schema.clone(), Arc::from("TestEntity"), slot);
 
         assert_eq!(provider.schema().fields().len(), 4);
     }
@@ -586,20 +585,20 @@ mod tests {
     async fn test_receiver_slot_flow() {
         let schema = make_test_entity_schema("TestEntity", 123);
         let slot = new_receiver_slot();
-        
+
         // Create a distribution channel (single channel)
         let (senders, mut receivers) = distributor_channels::channels::<RecordBatch>(1);
         let tx = senders.into_iter().next().unwrap();
         let rx = receivers.pop().unwrap();
-        
+
         // Set the slot by storing the receiver
         *slot.lock() = Some(rx);
-        
+
         // Should be able to take the receiver
         let retrieved = slot.lock().take();
         assert!(retrieved.is_some());
         let mut receiver = retrieved.unwrap();
-        
+
         // Send a batch
         let batch = RecordBatch::try_new(
             schema.arrow_schema.clone(),
@@ -609,11 +608,12 @@ mod tests {
                 Arc::new(datafusion::arrow::array::StringArray::from(vec!["update"])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![42])),
             ],
-        ).unwrap();
-        
+        )
+        .unwrap();
+
         tx.send(batch).await.unwrap();
         drop(tx);
-        
+
         // Should be able to receive
         let received = receiver.recv().await;
         assert!(received.is_some());
@@ -651,7 +651,7 @@ mod tests {
         );
 
         let ctx = streaming_session_context();
-        
+
         // Register providers for one entity type
         let slot = new_receiver_slot();
         let provider = EntityTableProvider::new(
@@ -659,7 +659,8 @@ mod tests {
             Arc::from("CCitadelPlayerPawn"),
             slot.clone(),
         );
-        ctx.register_table("CCitadelPlayerPawn", Arc::new(provider)).unwrap();
+        ctx.register_table("CCitadelPlayerPawn", Arc::new(provider))
+            .unwrap();
 
         // Plan a simple query
         let sql = "SELECT tick, entity_index FROM CCitadelPlayerPawn WHERE tick > 100";
@@ -684,7 +685,7 @@ mod tests {
         // Test that distribution channels work with multiple receivers
         // Each receiver gets its own channel, but they share a gate
         let (senders, mut receivers) = distributor_channels::channels::<RecordBatch>(2);
-        
+
         let schema = make_test_entity_schema("TestEntity", 123);
         let batch = RecordBatch::try_new(
             schema.arrow_schema.clone(),
@@ -694,7 +695,8 @@ mod tests {
                 Arc::new(datafusion::arrow::array::StringArray::from(vec!["update"])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![42])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         // Send to each channel (simulating broadcast - sender clones batch to each channel)
         for sender in &senders {
@@ -720,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_event_table_provider_creation() {
-        use crate::events::{event_schema, EventType};
+        use crate::events::{EventType, event_schema};
 
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
         let slot = new_receiver_slot();
@@ -750,12 +752,14 @@ mod tests {
 
         let mut receiver = retrieved.unwrap();
         let received = receiver.recv().await;
-        assert!(received.is_none(), "Channel should be closed after dropping sender");
+        assert!(
+            received.is_none(),
+            "Channel should be closed after dropping sender"
+        );
     }
 
     #[tokio::test]
     async fn test_event_broadcast_semantics() {
-
         // Create distribution channels for two event receivers
         let (senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
 
@@ -783,18 +787,18 @@ mod tests {
     }
 
     /// Regression test: execute_stream() must execute ALL partitions of a plan.
-    /// 
+    ///
     /// Previously, the code called `plan.execute(0, ctx)` which only executed
     /// partition 0. For UNION ALL queries, this meant only the first branch
     /// was executed, leaving other partitions' data unconsumed (memory leak)
     /// and their receivers orphaned (causing "Channel closed" errors).
-    /// 
+    ///
     /// This test creates a UnionExec with multiple partitions and verifies
     /// that execute_stream() returns data from ALL partitions, not just the first.
     #[tokio::test]
     async fn test_execute_stream_runs_all_partitions() {
-        use datafusion::physical_plan::union::UnionExec;
         use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::physical_plan::union::UnionExec;
         use futures::StreamExt;
 
         let schema = Arc::new(Schema::new(vec![
@@ -809,7 +813,8 @@ mod tests {
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![0, 0])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![100, 101])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let batch_b = RecordBatch::try_new(
             schema.clone(),
@@ -817,7 +822,8 @@ mod tests {
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![1, 1])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![200, 201])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         let batch_c = RecordBatch::try_new(
             schema.clone(),
@@ -825,19 +831,20 @@ mod tests {
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![2, 2])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![300, 301])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
-        let exec_a = MemorySourceConfig::try_new_exec(&[vec![batch_a]], schema.clone(), None).unwrap();
-        let exec_b = MemorySourceConfig::try_new_exec(&[vec![batch_b]], schema.clone(), None).unwrap();
-        let exec_c = MemorySourceConfig::try_new_exec(&[vec![batch_c]], schema.clone(), None).unwrap();
+        let exec_a =
+            MemorySourceConfig::try_new_exec(&[vec![batch_a]], schema.clone(), None).unwrap();
+        let exec_b =
+            MemorySourceConfig::try_new_exec(&[vec![batch_b]], schema.clone(), None).unwrap();
+        let exec_c =
+            MemorySourceConfig::try_new_exec(&[vec![batch_c]], schema.clone(), None).unwrap();
 
         // UnionExec combines them - this creates a plan with 3 partitions
-        let plan: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
-            exec_a,
-            exec_b,
-            exec_c,
-        ]).unwrap();
-        
+        let plan: Arc<dyn ExecutionPlan> =
+            UnionExec::try_new(vec![exec_a, exec_b, exec_c]).unwrap();
+
         // Verify we have multiple partitions (this is what UNION ALL produces)
         assert_eq!(
             plan.properties().output_partitioning().partition_count(),
@@ -857,13 +864,13 @@ mod tests {
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.expect("batch should succeed");
             total_rows += batch.num_rows();
-            
+
             let partition_col = batch
                 .column(0)
                 .as_any()
                 .downcast_ref::<datafusion::arrow::array::Int32Array>()
                 .unwrap();
-            
+
             for i in 0..partition_col.len() {
                 partition_ids_seen.insert(partition_col.value(i));
             }
@@ -887,31 +894,38 @@ mod tests {
     /// returns data from that single partition.
     #[tokio::test]
     async fn test_execute_partition_zero_only_returns_first_partition() {
-        use datafusion::physical_plan::union::UnionExec;
         use datafusion::datasource::memory::MemorySourceConfig;
+        use datafusion::physical_plan::union::UnionExec;
         use futures::StreamExt;
 
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("partition_id", DataType::Int32, false),
-        ]));
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "partition_id",
+            DataType::Int32,
+            false,
+        )]));
 
         let batch_a = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![0]))],
-        ).unwrap();
+            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![
+                0,
+            ]))],
+        )
+        .unwrap();
 
         let batch_b = RecordBatch::try_new(
             schema.clone(),
-            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![1]))],
-        ).unwrap();
+            vec![Arc::new(datafusion::arrow::array::Int32Array::from(vec![
+                1,
+            ]))],
+        )
+        .unwrap();
 
-        let exec_a = MemorySourceConfig::try_new_exec(&[vec![batch_a]], schema.clone(), None).unwrap();
-        let exec_b = MemorySourceConfig::try_new_exec(&[vec![batch_b]], schema.clone(), None).unwrap();
+        let exec_a =
+            MemorySourceConfig::try_new_exec(&[vec![batch_a]], schema.clone(), None).unwrap();
+        let exec_b =
+            MemorySourceConfig::try_new_exec(&[vec![batch_b]], schema.clone(), None).unwrap();
 
-        let plan: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![
-            exec_a,
-            exec_b,
-        ]).unwrap();
+        let plan: Arc<dyn ExecutionPlan> = UnionExec::try_new(vec![exec_a, exec_b]).unwrap();
         assert_eq!(plan.properties().output_partitioning().partition_count(), 2);
 
         // Execute ONLY partition 0 (the buggy approach)
@@ -922,8 +936,11 @@ mod tests {
         let mut partition_ids_seen = std::collections::HashSet::new();
         while let Some(batch_result) = stream.next().await {
             let batch = batch_result.unwrap();
-            let col = batch.column(0).as_any()
-                .downcast_ref::<datafusion::arrow::array::Int32Array>().unwrap();
+            let col = batch
+                .column(0)
+                .as_any()
+                .downcast_ref::<datafusion::arrow::array::Int32Array>()
+                .unwrap();
             for i in 0..col.len() {
                 partition_ids_seen.insert(col.value(i));
             }

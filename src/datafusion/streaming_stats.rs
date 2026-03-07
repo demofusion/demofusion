@@ -6,8 +6,8 @@
 //! - Detecting slow consumers causing buffer buildup
 //! - Making cancellation decisions when buffers grow too large
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Aggregate statistics for a streaming query session.
 ///

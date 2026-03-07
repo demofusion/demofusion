@@ -519,15 +519,15 @@ fn generate_list_append(
                     );
                     code.push_str(&child_code);
                 }
-                code.push_str(" ");
+                code.push(' ');
             }
             code.push_str(&format!("{}.values().append(true); ", lb_var));
         }
         _ => {
             let value_expr = match &kind {
                 Kind::Enum(_) => format!("*{} as i32", item_var),
-                Kind::String => format!("{}", item_var),
-                Kind::Bytes => format!("{}", item_var),
+                Kind::String => item_var.to_string(),
+                Kind::Bytes => item_var.to_string(),
                 _ => format!("*{}", item_var),
             };
             code.push_str(&format!(
@@ -633,15 +633,15 @@ fn generate_list_append_in_struct(
                     );
                     code.push_str(&child_code);
                 }
-                code.push_str(" ");
+                code.push(' ');
             }
             code.push_str(&format!("{}.values().append(true); ", inner_lb_var));
         }
         _ => {
             let value_expr = match &kind {
                 Kind::Enum(_) => format!("*{} as i32", inner_item_var),
-                Kind::String => format!("{}", inner_item_var),
-                Kind::Bytes => format!("{}", inner_item_var),
+                Kind::String => inner_item_var.to_string(),
+                Kind::Bytes => inner_item_var.to_string(),
                 _ => format!("*{}", inner_item_var),
             };
             code.push_str(&format!(
@@ -720,7 +720,7 @@ fn generate_message_append_in_struct(
                 generate_value_expr(&child_kind, &nested_var, &child_rust_name)
             ));
         }
-        code.push_str(" ");
+        code.push(' ');
     }
 
     code.push_str(&format!("{}.append(true); ", nested_sb_var));
@@ -748,7 +748,7 @@ fn generate_message_append_in_struct(
                 child_idx
             ));
         }
-        code.push_str(" ");
+        code.push(' ');
     }
 
     code.push_str(&format!("{}.append(false); ", nested_sb_var));
@@ -809,7 +809,7 @@ fn generate_list_append_in_nested_struct(
                     code.push_str(&child_code);
                 } else if let Kind::Message(nested) = &child_kind {
                     let child_code = generate_message_append_in_struct(
-                        &nested,
+                        nested,
                         &child_rust_name,
                         &child_ctx,
                         &inner_lb_var,
@@ -825,15 +825,15 @@ fn generate_list_append_in_nested_struct(
                         generate_value_expr(&child_kind, &inner_item_var, &child_rust_name)
                     ));
                 }
-                code.push_str(" ");
+                code.push(' ');
             }
             code.push_str(&format!("{}.values().append(true); ", inner_lb_var));
         }
         _ => {
             let value_expr = match &kind {
                 Kind::Enum(_) => format!("*{} as i32", inner_item_var),
-                Kind::String => format!("{}", inner_item_var),
-                Kind::Bytes => format!("{}", inner_item_var),
+                Kind::String => inner_item_var.to_string(),
+                Kind::Bytes => inner_item_var.to_string(),
                 _ => format!("*{}", inner_item_var),
             };
             code.push_str(&format!(
@@ -912,7 +912,7 @@ fn generate_message_append_in_nested_struct(
                 generate_value_expr(&child_kind, &nested_var, &child_rust_name)
             ));
         }
-        code.push_str(" ");
+        code.push(' ');
     }
 
     code.push_str(&format!("{}.append(true); ", nested_sb_var));
@@ -940,7 +940,7 @@ fn generate_message_append_in_nested_struct(
                 child_idx
             ));
         }
-        code.push_str(" ");
+        code.push(' ');
     }
 
     code.push_str(&format!("{}.append(false); ", nested_sb_var));

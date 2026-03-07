@@ -8,7 +8,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 
-use super::{append_event_to_builders, event_schema, DecodedEvent, EventType};
+use super::{DecodedEvent, EventType, append_event_to_builders, event_schema};
 
 const DEFAULT_BATCH_SIZE: usize = 1024;
 
@@ -110,13 +110,18 @@ impl EventBatchBuilders {
         self.builders.get_mut(&event_type).map(|b| b.flush())
     }
 
-    pub fn flush_all(&mut self) -> Vec<(EventType, Result<RecordBatch, datafusion::arrow::error::ArrowError>)> {
+    pub fn flush_all(
+        &mut self,
+    ) -> Vec<(
+        EventType,
+        Result<RecordBatch, datafusion::arrow::error::ArrowError>,
+    )> {
         let mut results = Vec::new();
         for event_type in EventType::all() {
-            if let Some(builder) = self.builders.get_mut(event_type) {
-                if builder.has_data() {
-                    results.push((*event_type, builder.flush()));
-                }
+            if let Some(builder) = self.builders.get_mut(event_type)
+                && builder.has_data()
+            {
+                results.push((*event_type, builder.flush()));
             }
         }
         results

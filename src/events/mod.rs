@@ -1,3 +1,4 @@
+#![allow(clippy::all)]
 #![allow(unused_variables)]
 
 mod batch_builder;

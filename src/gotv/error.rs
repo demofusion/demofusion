@@ -113,13 +113,13 @@ impl SqlError {
             return SqlError::FieldNotFound { field };
         }
 
-        if msg.contains("table") && msg.contains("not found") {
-            if let Some(start) = msg.find('\'') {
-                if let Some(end) = msg[start + 1..].find('\'') {
-                    let table = msg[start + 1..start + 1 + end].to_string();
-                    return SqlError::InvalidTable { table };
-                }
-            }
+        if msg.contains("table")
+            && msg.contains("not found")
+            && let Some(start) = msg.find('\'')
+            && let Some(end) = msg[start + 1..].find('\'')
+        {
+            let table = msg[start + 1..start + 1 + end].to_string();
+            return SqlError::InvalidTable { table };
         }
 
         tracing::warn!(error_message = %msg, "Unhandled DataFusion plan error");

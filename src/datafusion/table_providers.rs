@@ -17,13 +17,13 @@ use datafusion::datasource::TableProvider;
 use datafusion::error::Result as DfResult;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{Expr, TableProviderFilterPushDown, TableType};
-use datafusion::physical_expr::expressions::col;
-use tracing::debug;
 use datafusion::physical_expr::PhysicalSortExpr;
+use datafusion::physical_expr::expressions::col;
 use datafusion::physical_expr_common::sort_expr::LexOrdering;
 use datafusion::physical_plan::streaming::{PartitionStream, StreamingTableExec};
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream};
 use parking_lot::Mutex;
+use tracing::debug;
 
 use crate::datafusion::distribution_stream::DistributionReceiverStream;
 use crate::datafusion::distributor_channels::DistributionReceiver;
@@ -172,10 +172,14 @@ impl PartitionStream for EntityPartitionStream {
     }
 
     fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        let receiver = self.receiver_slot.lock().take()
-            .expect("Receiver slot empty - execute() called before slot was filled or called twice");
-        
-        Box::pin(DistributionReceiverStream::new(self.schema.clone(), receiver))
+        let receiver = self.receiver_slot.lock().take().expect(
+            "Receiver slot empty - execute() called before slot was filled or called twice",
+        );
+
+        Box::pin(DistributionReceiverStream::new(
+            self.schema.clone(),
+            receiver,
+        ))
     }
 }
 
@@ -286,10 +290,14 @@ impl PartitionStream for EventPartitionStream {
             event_type = ?self.event_type,
             "EventPartitionStream::execute called"
         );
-        let receiver = self.receiver_slot.lock().take()
-            .expect("Event receiver slot empty - execute() called before slot was filled or called twice");
-        
-        Box::pin(DistributionReceiverStream::new(self.schema.clone(), receiver))
+        let receiver = self.receiver_slot.lock().take().expect(
+            "Event receiver slot empty - execute() called before slot was filled or called twice",
+        );
+
+        Box::pin(DistributionReceiverStream::new(
+            self.schema.clone(),
+            receiver,
+        ))
     }
 }
 
@@ -310,11 +318,7 @@ mod tests {
     fn test_entity_table_provider_creation() {
         let schema = make_test_schema();
         let slot = new_receiver_slot();
-        let provider = EntityTableProvider::new(
-            schema.clone(),
-            Arc::from("TestEntity"),
-            slot,
-        );
+        let provider = EntityTableProvider::new(schema.clone(), Arc::from("TestEntity"), slot);
 
         assert_eq!(&*provider.entity_type, "TestEntity");
         assert_eq!(provider.schema().fields().len(), 3);
@@ -322,8 +326,8 @@ mod tests {
 
     #[test]
     fn test_event_table_provider_creation() {
-        use crate::events::{event_schema, EventType};
-        
+        use crate::events::{EventType, event_schema};
+
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
         let slot = new_receiver_slot();
         let provider = EventTableProvider::new(EventType::Damage, schema.clone(), slot);
@@ -336,7 +340,11 @@ mod tests {
     async fn test_tick_ordering_included() {
         let schema = make_test_schema();
         let ordering = build_tick_ordering(&schema, None);
-        assert_eq!(ordering.len(), 1, "Should have tick ordering when tick is in schema");
+        assert_eq!(
+            ordering.len(),
+            1,
+            "Should have tick ordering when tick is in schema"
+        );
     }
 
     #[tokio::test]
@@ -345,6 +353,10 @@ mod tests {
         // Project only entity_index (index 1) and test_field (index 2), excluding tick (index 0)
         let projection = vec![1, 2];
         let ordering = build_tick_ordering(&schema, Some(&projection));
-        assert_eq!(ordering.len(), 0, "Should not have tick ordering when tick not in projection");
+        assert_eq!(
+            ordering.len(),
+            0,
+            "Should not have tick ordering when tick not in projection"
+        );
     }
 }

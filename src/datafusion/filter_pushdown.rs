@@ -25,15 +25,15 @@ impl DemoScanFilters {
     }
 
     pub fn should_include_tick(&self, tick: i32) -> bool {
-        if let Some(min) = self.tick_min {
-            if tick < min {
-                return false;
-            }
+        if let Some(min) = self.tick_min
+            && tick < min
+        {
+            return false;
         }
-        if let Some(max) = self.tick_max {
-            if tick > max {
-                return false;
-            }
+        if let Some(max) = self.tick_max
+            && tick > max
+        {
+            return false;
         }
         true
     }
@@ -82,40 +82,41 @@ fn extract_from_expr(expr: &Expr, filters: &mut DemoScanFilters) {
             extract_from_binary(&binary.left, binary.op, &binary.right, filters);
         }
         Expr::Between(between) => {
-            if let Some(col_name) = extract_column_name(&between.expr) {
-                if col_name == "tick" {
-                    if let Some(low) = extract_i32_value(&between.low) {
-                        let effective_min = if between.negated { low + 1 } else { low };
-                        filters.tick_min = Some(
-                            filters
-                                .tick_min
-                                .map_or(effective_min, |m| m.max(effective_min)),
-                        );
-                    }
-                    if let Some(high) = extract_i32_value(&between.high) {
-                        let effective_max = if between.negated { high - 1 } else { high };
-                        filters.tick_max = Some(
-                            filters
-                                .tick_max
-                                .map_or(effective_max, |m| m.min(effective_max)),
-                        );
-                    }
+            if let Some(col_name) = extract_column_name(&between.expr)
+                && col_name == "tick"
+            {
+                if let Some(low) = extract_i32_value(&between.low) {
+                    let effective_min = if between.negated { low + 1 } else { low };
+                    filters.tick_min = Some(
+                        filters
+                            .tick_min
+                            .map_or(effective_min, |m| m.max(effective_min)),
+                    );
+                }
+                if let Some(high) = extract_i32_value(&between.high) {
+                    let effective_max = if between.negated { high - 1 } else { high };
+                    filters.tick_max = Some(
+                        filters
+                            .tick_max
+                            .map_or(effective_max, |m| m.min(effective_max)),
+                    );
                 }
             }
         }
         Expr::InList(in_list) => {
-            if let Some(col_name) = extract_column_name(&in_list.expr) {
-                if col_name == "entity_index" && !in_list.negated {
-                    let indices: HashSet<i32> =
-                        in_list.list.iter().filter_map(extract_i32_value).collect();
-                    if !indices.is_empty() {
-                        match &mut filters.entity_indices {
-                            Some(existing) => {
-                                *existing = existing.intersection(&indices).copied().collect();
-                            }
-                            None => {
-                                filters.entity_indices = Some(indices);
-                            }
+            if let Some(col_name) = extract_column_name(&in_list.expr)
+                && col_name == "entity_index"
+                && !in_list.negated
+            {
+                let indices: HashSet<i32> =
+                    in_list.list.iter().filter_map(extract_i32_value).collect();
+                if !indices.is_empty() {
+                    match &mut filters.entity_indices {
+                        Some(existing) => {
+                            *existing = existing.intersection(&indices).copied().collect();
+                        }
+                        None => {
+                            filters.entity_indices = Some(indices);
                         }
                     }
                 }

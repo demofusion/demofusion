@@ -11,7 +11,11 @@ pub mod table_providers;
 mod integration_tests;
 
 pub use distribution_stream::DistributionReceiverStream;
-pub use distributor_channels::{channels, DistributionReceiver, DistributionSender};
-pub use pipeline_analysis::{analyze_pipeline, format_plan_tree, PipelineAnalysis, PipelineBreaker};
+pub use distributor_channels::{DistributionReceiver, DistributionSender, channels};
+pub use pipeline_analysis::{
+    PipelineAnalysis, PipelineBreaker, analyze_pipeline, format_plan_tree,
+};
 pub use streaming_stats::{StreamingStats, StreamingStatsSnapshot};
-pub use table_providers::{EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot};
+pub use table_providers::{
+    EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot,
+};

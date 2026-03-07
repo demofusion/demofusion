@@ -74,10 +74,10 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
+use bytes::Bytes;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use bytes::Bytes;
-use datafusion::physical_plan::{execute_stream, ExecutionPlan, SendableRecordBatchStream};
+use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
@@ -91,8 +91,8 @@ use super::client::BroadcastClient;
 use super::config::ClientConfig;
 use super::error::{GotvError, SqlError};
 use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
-use crate::datafusion::table_providers::EntityTableProvider;
 use crate::datafusion::streaming_stats::StreamingStats;
+use crate::datafusion::table_providers::EntityTableProvider;
 use crate::schema::EntitySchema;
 use crate::sql::extract_table_names;
 use crate::visitor::discover_schemas_from_broadcast;
@@ -146,7 +146,7 @@ impl Stream for QueryHandle {
 }
 
 /// Result of starting a spectate session.
-/// 
+///
 /// Contains the parser task handle and optional streaming statistics.
 pub struct SpectateResult {
     /// Handle to the background parser task.
@@ -280,12 +280,13 @@ impl SpectateSession {
     /// - The query references unknown entity types
     /// - The query contains pipeline breakers and `reject_pipeline_breakers` is enabled
     pub async fn add_query(&mut self, sql: &str) -> Result<QueryHandle, GotvError> {
-        let table_names = extract_table_names(sql)
-            .map_err(|e| GotvError::Sql(SqlError::Syntax {
+        let table_names = extract_table_names(sql).map_err(|e| {
+            GotvError::Sql(SqlError::Syntax {
                 message: e.to_string(),
                 line: 0,
                 column: 0,
-            }))?;
+            })
+        })?;
 
         let entity_types: Vec<Arc<str>> = table_names
             .iter()
@@ -300,14 +301,19 @@ impl SpectateSession {
 
         if !unknown_tables.is_empty() {
             return Err(GotvError::UnknownEntity(
-                unknown_tables.into_iter().cloned().collect::<Vec<_>>().join(", "),
+                unknown_tables
+                    .into_iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
             ));
         }
 
         if entity_types.is_empty() {
             return Err(SqlError::InvalidTable {
                 table: "(none)".to_string(),
-            }.into());
+            }
+            .into());
         }
 
         let ctx = streaming_session_context();
@@ -327,12 +333,18 @@ impl SpectateSession {
                 .map_err(|e| GotvError::DataFusion(e.to_string()))?;
         }
 
-        let logical_plan = ctx.state().create_logical_plan(sql).await
+        let logical_plan = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
             .map_err(SqlError::from_datafusion)?;
-        
+
         let output_schema: SchemaRef = Arc::new(logical_plan.schema().as_arrow().clone());
 
-        let physical_plan = ctx.state().create_physical_plan(&logical_plan).await
+        let physical_plan = ctx
+            .state()
+            .create_physical_plan(&logical_plan)
+            .await
             .map_err(|e| GotvError::DataFusion(e.to_string()))?;
 
         let analysis = analyze_pipeline(&physical_plan);
@@ -373,16 +385,22 @@ impl SpectateSession {
     ///
     /// Returns a handle to the parser task. You can await it to detect parser errors
     /// after the broadcast ends.
-    pub async fn start(self, cancel_token: CancellationToken) -> Result<JoinHandle<Result<(), GotvError>>, GotvError> {
+    pub async fn start(
+        self,
+        cancel_token: CancellationToken,
+    ) -> Result<JoinHandle<Result<(), GotvError>>, GotvError> {
         let result = self.start_with_stats(cancel_token).await?;
         Ok(result.parser_handle)
     }
-    
+
     /// Start streaming with statistics collection enabled.
     ///
     /// Same as [`start`](Self::start) but also returns streaming statistics
     /// for monitoring in-flight data (rows produced, rows sent, backpressure events).
-    pub async fn start_with_stats(self, cancel_token: CancellationToken) -> Result<SpectateResult, GotvError> {
+    pub async fn start_with_stats(
+        self,
+        cancel_token: CancellationToken,
+    ) -> Result<SpectateResult, GotvError> {
         if self.pending_queries.is_empty() {
             return Err(GotvError::NotStarted);
         }
@@ -395,7 +413,7 @@ impl SpectateSession {
             batch_size,
             reject_pipeline_breakers: _,
         } = self;
-        
+
         // Create stats tracker for monitoring
         let stats = StreamingStats::new();
 
@@ -418,11 +436,13 @@ impl SpectateSession {
         }
 
         let total_channels: usize = used_entity_slots.values().map(|v| v.len()).sum();
-        let (all_senders, all_receivers) = distributor_channels::channels::<RecordBatch>(total_channels);
+        let (all_senders, all_receivers) =
+            distributor_channels::channels::<RecordBatch>(total_channels);
         let mut sender_iter = all_senders.into_iter();
         let mut receiver_idx = 0;
 
-        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> = HashMap::new();
+        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> =
+            HashMap::new();
         let mut entity_slot_receiver_indices: Vec<(ReceiverSlot, usize)> = Vec::new();
 
         for (entity_type, slots) in &used_entity_slots {
@@ -445,7 +465,7 @@ impl SpectateSession {
             .collect();
 
         let (packet_tx, packet_rx) = mpsc::channel::<Bytes>(32);
-        
+
         let stats_clone = Arc::clone(&stats);
         let parser_handle: JoinHandle<Result<(), GotvError>> = tokio::spawn(run_parser(
             packet_rx,
@@ -464,20 +484,24 @@ impl SpectateSession {
             }
         });
 
-        let mut receivers_by_idx: HashMap<usize, BatchReceiver> = all_receivers
-            .into_iter()
-            .enumerate()
-            .collect();
+        let mut receivers_by_idx: HashMap<usize, BatchReceiver> =
+            all_receivers.into_iter().enumerate().collect();
 
         for (slot, idx) in entity_slot_receiver_indices {
-            let rx = receivers_by_idx.remove(&idx).expect("receiver index mismatch");
+            let rx = receivers_by_idx
+                .remove(&idx)
+                .expect("receiver index mismatch");
             let old = slot.lock().replace(rx);
             if old.is_some() {
                 return Err(GotvError::Internal("Slot already set".to_string()));
             }
         }
 
-        for ((plan, ctx), result_tx) in plans.into_iter().zip(contexts.into_iter()).zip(result_senders.into_iter()) {
+        for ((plan, ctx), result_tx) in plans
+            .into_iter()
+            .zip(contexts.into_iter())
+            .zip(result_senders.into_iter())
+        {
             let stream = execute_stream(plan, ctx.task_ctx())
                 .map_err(|e| GotvError::DataFusion(e.to_string()))?;
 
@@ -515,7 +539,8 @@ async fn run_parser(
     use crate::visitor::{BatchingDemoVisitor, BatchingEntityDispatcher};
 
     let broadcast_stream = PacketChannelBroadcastStream::new(packet_rx);
-    let entity_dispatcher = BatchingEntityDispatcher::new_with_stats(entity_senders, batch_size, stats);
+    let entity_dispatcher =
+        BatchingEntityDispatcher::new_with_stats(entity_senders, batch_size, stats);
     let visitor = BatchingDemoVisitor::new(entity_dispatcher, None, &schemas);
 
     let mut parser = AsyncStreamingParser::from_stream_with_visitor(broadcast_stream, visitor)
@@ -559,7 +584,8 @@ mod tests {
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![100, 200])),
                 Arc::new(datafusion::arrow::array::Int32Array::from(vec![1, 2])),
             ],
-        ).unwrap();
+        )
+        .unwrap();
 
         tx.send(Ok(batch.clone())).unwrap();
         drop(tx);
@@ -583,7 +609,8 @@ mod tests {
             schema,
         };
 
-        tx.send(Err(GotvError::DataFusion("test error".to_string()))).unwrap();
+        tx.send(Err(GotvError::DataFusion("test error".to_string())))
+            .unwrap();
         drop(tx);
 
         let received = handle.next().await;

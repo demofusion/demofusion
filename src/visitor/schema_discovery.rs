@@ -8,7 +8,7 @@ use crate::haste::valveprotos::common::EDemoCommands;
 use prost::Message;
 
 use crate::error::{Result, Source2DfError};
-use crate::schema::{compute_field_key, EntitySchema, FieldInfo, SchemaBuilder, SymbolTable};
+use crate::schema::{EntitySchema, FieldInfo, SchemaBuilder, SymbolTable, compute_field_key};
 
 pub struct SchemaDiscoveryVisitor {
     symbols: Arc<Mutex<Option<Vec<String>>>>,
@@ -82,10 +82,10 @@ impl Visitor for SchemaDiscoveryVisitor {
     ) -> std::result::Result<(), Self::Error> {
         match cmd_header.cmd {
             EDemoCommands::DemSendTables => {
-                if let Ok(symbols) = extract_symbols_from_send_tables(data) {
-                    if let Ok(mut guard) = self.symbols.lock() {
-                        *guard = Some(symbols);
-                    }
+                if let Ok(symbols) = extract_symbols_from_send_tables(data)
+                    && let Ok(mut guard) = self.symbols.lock()
+                {
+                    *guard = Some(symbols);
                 }
                 self.serializers_discovered = true;
             }
@@ -111,8 +111,9 @@ fn extract_symbols_from_send_tables(data: &[u8]) -> Result<Vec<String>> {
     let (_size, _count) = read_uvarint64(&mut data_slice)
         .map_err(|e| Source2DfError::Haste(format!("Failed to read varint: {}", e)))?;
 
-    let msg = CsvcMsgFlattenedSerializer::decode(data_slice)
-        .map_err(|e| Source2DfError::Haste(format!("Failed to decode flattened serializer: {}", e)))?;
+    let msg = CsvcMsgFlattenedSerializer::decode(data_slice).map_err(|e| {
+        Source2DfError::Haste(format!("Failed to decode flattened serializer: {}", e))
+    })?;
 
     Ok(msg.symbols.into_iter().collect())
 }
@@ -187,17 +188,15 @@ impl DiscoveredSchemas {
             collect_fields_recursive(
                 serializer,
                 &symbol_table,
-                None,  // parent_path
-                None,  // parent_key
+                None, // parent_path
+                None, // parent_key
                 &mut fields,
-                0,     // depth
+                0, // depth
             );
 
-            if let Ok(schema) = builder.build_schema(
-                &serializer_name,
-                serializer.serializer_name.hash,
-                &fields,
-            ) {
+            if let Ok(schema) =
+                builder.build_schema(&serializer_name, serializer.serializer_name.hash, &fields)
+            {
                 schemas.insert(serializer.serializer_name.hash, schema);
             }
         }
@@ -213,10 +212,7 @@ impl DiscoveredSchemas {
     }
 
     pub fn serializer_names(&self) -> Vec<&str> {
-        self.schemas
-            .values()
-            .map(|s| &*s.serializer_name)
-            .collect()
+        self.schemas.values().map(|s| &*s.serializer_name).collect()
     }
 }
 
@@ -265,40 +261,40 @@ fn collect_fields_recursive(
         // 2. Recursively build the children Vec<FieldInfo>
         // 3. Let SchemaBuilder create a DataType::Struct from the children
         let is_pointer = field.is_pointer();
-        
-        if let Some(nested_serializer) = &field.field_serializer {
-            if is_pointer {
-                // For Pointer types (CBodyComponent, etc.), recurse into nested fields
-                // but don't add the parent field itself (it's just a bool indicating presence)
-                let var_name = match symbol_table.resolve(field.var_name.hash) {
-                    Some(name) => name,
-                    None => continue,
-                };
-                
-                let nested_path = match parent_path {
-                    Some(pp) => format!("{}.{}", pp, var_name),
-                    None => var_name.to_string(),
-                };
-                
-                // Compute the composite key for the parent field
-                // This must match how the parser builds field_key in entities.rs
-                let nested_key = match parent_key {
-                    Some(pk) => crate::haste::fxhash::add_u64_to_hash(pk, field.var_name.hash),
-                    None => field.var_name.hash,
-                };
-                
-                collect_fields_recursive(
-                    nested_serializer,
-                    symbol_table,
-                    Some(&nested_path),
-                    Some(nested_key),
-                    fields,
-                    depth + 1,
-                );
-                continue;  // Don't add the pointer field itself
-            }
+
+        if let Some(nested_serializer) = &field.field_serializer
+            && is_pointer
+        {
+            // For Pointer types (CBodyComponent, etc.), recurse into nested fields
+            // but don't add the parent field itself (it's just a bool indicating presence)
+            let var_name = match symbol_table.resolve(field.var_name.hash) {
+                Some(name) => name,
+                None => continue,
+            };
+
+            let nested_path = match parent_path {
+                Some(pp) => format!("{}.{}", pp, var_name),
+                None => var_name.to_string(),
+            };
+
+            // Compute the composite key for the parent field
+            // This must match how the parser builds field_key in entities.rs
+            let nested_key = match parent_key {
+                Some(pk) => crate::haste::fxhash::add_u64_to_hash(pk, field.var_name.hash),
+                None => field.var_name.hash,
+            };
+
+            collect_fields_recursive(
+                nested_serializer,
+                symbol_table,
+                Some(&nested_path),
+                Some(nested_key),
+                fields,
+                depth + 1,
+            );
+            continue; // Don't add the pointer field itself
         }
-        
+
         // Add leaf fields (non-pointer fields)
         if let Some(field_info) = extract_field_info(field, symbol_table, parent_path, parent_key) {
             fields.push(field_info);
@@ -320,20 +316,20 @@ fn extract_field_info(
 ) -> Option<FieldInfo> {
     let var_name = symbol_table.resolve(field.var_name.hash)?;
     let var_type = symbol_table.resolve(field.var_type.hash)?;
-    
+
     // Build the send_node path by combining parent_path with the field's own send_node
     let field_send_node = field
         .send_node
         .as_ref()
         .and_then(|sn| symbol_table.resolve(sn.hash));
-    
+
     let send_node = match (parent_path, field_send_node) {
         (Some(pp), Some(sn)) => Some(format!("{}.{}", pp, sn)),
         (Some(pp), None) => Some(pp.to_string()),
         (None, Some(sn)) => Some(sn.to_string()),
         (None, None) => None,
     };
-    
+
     // Compute the field key
     // For nested fields, we need to combine the parent key with this field's var_name hash
     // This must match how the parser computes field_key in entities.rs:
@@ -342,7 +338,7 @@ fn extract_field_info(
         Some(pk) => crate::haste::fxhash::add_u64_to_hash(pk, field.var_name.hash),
         None => compute_field_key(send_node.as_deref(), var_name),
     };
-    
+
     Some(FieldInfo::new(
         var_name.to_string(),
         var_type.to_string(),

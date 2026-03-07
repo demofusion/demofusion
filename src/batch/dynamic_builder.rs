@@ -289,10 +289,10 @@ impl DynamicBuilder {
             },
             Self::Binary(b) => match value {
                 FieldValue::String(v) => b.append_value(v.as_ref()),
-                FieldValue::U64(v) => b.append_value(&v.to_le_bytes()),
-                FieldValue::I64(v) => b.append_value(&v.to_le_bytes()),
-                FieldValue::F32(v) => b.append_value(&v.to_le_bytes()),
-                FieldValue::Bool(v) => b.append_value(&[*v as u8]),
+                FieldValue::U64(v) => b.append_value(v.to_le_bytes()),
+                FieldValue::I64(v) => b.append_value(v.to_le_bytes()),
+                FieldValue::F32(v) => b.append_value(v.to_le_bytes()),
+                FieldValue::Bool(v) => b.append_value([*v as u8]),
                 _ => b.append_null(),
             },
             Self::Null(b) => b.append_null(),
@@ -388,6 +388,10 @@ impl DynamicBuilder {
             Self::FixedListBinary(b) => b.len(),
             Self::FixedListNull(b) => b.len(),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 

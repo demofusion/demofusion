@@ -229,9 +229,7 @@ impl BroadcastClient {
 
     /// Check if cancelled.
     fn is_cancelled(&self) -> bool {
-        self.cancel_token
-            .as_ref()
-            .map_or(false, |t| t.is_cancelled())
+        self.cancel_token.as_ref().is_some_and(|t| t.is_cancelled())
     }
 
     /// Sleep with cancellation support.
@@ -367,7 +365,7 @@ impl BroadcastClient {
                 continue;
             }
 
-            let content = Bytes::from(response.bytes().await?);
+            let content = response.bytes().await?;
             self.stats.bytes_downloaded += content.len() as u64;
             self.start_packet = Some(content.clone());
 
@@ -397,14 +395,21 @@ impl BroadcastClient {
 
             match self.fetch_next().await {
                 Ok(Some(packet)) => {
-                    eprintln!("[gotv] stream_to_channel: sending {} bytes, state={}", packet.len(), self.state());
+                    eprintln!(
+                        "[gotv] stream_to_channel: sending {} bytes, state={}",
+                        packet.len(),
+                        self.state()
+                    );
                     if tx.send(packet).await.is_err() {
                         eprintln!("[gotv] stream_to_channel: channel closed");
                         break StreamEndReason::ChannelClosed;
                     }
                 }
                 Ok(None) => {
-                    eprintln!("[gotv] stream_to_channel: fetch_next returned None, state={}", self.state());
+                    eprintln!(
+                        "[gotv] stream_to_channel: fetch_next returned None, state={}",
+                        self.state()
+                    );
                     continue;
                 }
                 Err(GotvError::BroadcastEnded) => {
@@ -437,7 +442,10 @@ impl BroadcastClient {
     async fn handle_start(&mut self) -> Result<Option<Bytes>, GotvError> {
         // If already fetched via fetch_start(), use cached packet
         if let Some(ref packet) = self.start_packet {
-            eprintln!("[gotv] handle_start: returning cached start packet ({} bytes)", packet.len());
+            eprintln!(
+                "[gotv] handle_start: returning cached start packet ({} bytes)",
+                packet.len()
+            );
             self.state = StreamState::FullFrame;
             return Ok(Some(packet.clone()));
         }
@@ -447,7 +455,7 @@ impl BroadcastClient {
         let response = self.client.get(&url).send().await?;
         response.error_for_status_ref()?;
 
-        let content = Bytes::from(response.bytes().await?);
+        let content = response.bytes().await?;
         eprintln!("[gotv] handle_start: got {} bytes", content.len());
         self.stats.bytes_downloaded += content.len() as u64;
         self.start_packet = Some(content.clone());
@@ -458,12 +466,15 @@ impl BroadcastClient {
 
     async fn handle_fullframe(&mut self) -> Result<Option<Bytes>, GotvError> {
         let url = self.build_fragment_url(self.stream_fragment, FragmentType::Full);
-        eprintln!("[gotv] handle_fullframe: fetching {} (fragment {})", url, self.stream_fragment);
+        eprintln!(
+            "[gotv] handle_fullframe: fetching {} (fragment {})",
+            url, self.stream_fragment
+        );
 
         let response = self.client.get(&url).send().await?;
         response.error_for_status_ref()?;
 
-        let content = Bytes::from(response.bytes().await?);
+        let content = response.bytes().await?;
         eprintln!("[gotv] handle_fullframe: got {} bytes", content.len());
         self.stats.bytes_downloaded += content.len() as u64;
         self.stats.fragments += 1;
@@ -496,7 +507,10 @@ impl BroadcastClient {
 
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 retries += 1;
-                eprintln!("[gotv] delta: 404, retry {} of {}", retries, self.config.delta_retries);
+                eprintln!(
+                    "[gotv] delta: 404, retry {} of {}",
+                    retries, self.config.delta_retries
+                );
                 self.sleep_cancellable(self.keyframe_interval).await?;
                 continue;
             }
@@ -507,7 +521,7 @@ impl BroadcastClient {
             }
 
             let content = match response.bytes().await {
-                Ok(b) => Bytes::from(b),
+                Ok(b) => b,
                 Err(e) => {
                     // Skip corrupt fragment
                     eprintln!("[gotv] delta: body error (skipping): {}", e);
@@ -517,7 +531,11 @@ impl BroadcastClient {
                 }
             };
 
-            eprintln!("[gotv] delta: got {} bytes for fragment {}", content.len(), self.stream_fragment);
+            eprintln!(
+                "[gotv] delta: got {} bytes for fragment {}",
+                content.len(),
+                self.stream_fragment
+            );
             self.stats.bytes_downloaded += content.len() as u64;
             self.stats.fragments += 1;
             self.stream_fragment += 1;
@@ -545,9 +563,7 @@ mod tests {
 
     #[test]
     fn test_client_with_config() {
-        let config = ClientConfig::builder()
-            .delta_retries(10)
-            .build();
+        let config = ClientConfig::builder().delta_retries(10).build();
 
         let client = BroadcastClient::with_config("http://example.com", config);
         assert_eq!(client.config.delta_retries, 10);
@@ -560,7 +576,10 @@ mod tests {
         client.stream_fragment = 150;
 
         assert_eq!(client.build_sync_url(), "http://example.com/tv/12345/sync");
-        assert_eq!(client.build_start_url(), "http://example.com/tv/12345/100/start");
+        assert_eq!(
+            client.build_start_url(),
+            "http://example.com/tv/12345/100/start"
+        );
         assert_eq!(
             client.build_fragment_url(150, FragmentType::Full),
             "http://example.com/tv/12345/150/full"
