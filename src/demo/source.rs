@@ -82,11 +82,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires demo file: set TEST_DEMO_PATH env var"]
     async fn test_demo_source_open_and_into_session() {
-        let demo_path = std::env::var("TEST_DEMO_PATH")
-            .expect("TEST_DEMO_PATH must be set to run this test");
+        let demo_path =
+            std::env::var("TEST_DEMO_PATH").expect("TEST_DEMO_PATH must be set to run this test");
 
-        let source = DemoSource::open(&demo_path).await.expect("Failed to open demo");
-        let (session, schemas) = source.into_session().await.expect("Failed to create session");
+        let source = DemoSource::open(&demo_path)
+            .await
+            .expect("Failed to open demo");
+        let (session, schemas) = source
+            .into_session()
+            .await
+            .expect("Failed to create session");
 
         assert!(!schemas.is_empty(), "Should discover at least one schema");
         assert!(
@@ -101,11 +106,16 @@ mod tests {
     async fn test_demo_source_query_execution() {
         use futures::StreamExt;
 
-        let demo_path = std::env::var("TEST_DEMO_PATH")
-            .expect("TEST_DEMO_PATH must be set to run this test");
+        let demo_path =
+            std::env::var("TEST_DEMO_PATH").expect("TEST_DEMO_PATH must be set to run this test");
 
-        let source = DemoSource::open(&demo_path).await.expect("Failed to open demo");
-        let (mut session, _schemas) = source.into_session().await.expect("Failed to create session");
+        let source = DemoSource::open(&demo_path)
+            .await
+            .expect("Failed to open demo");
+        let (mut session, _schemas) = source
+            .into_session()
+            .await
+            .expect("Failed to create session");
 
         let mut query = session
             .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 10")
