@@ -70,9 +70,15 @@ impl SqlError {
             DataFusionError::ArrowError(_, _)
             | DataFusionError::Execution(_)
             | DataFusionError::ExecutionJoin(_)
-            | DataFusionError::ResourcesExhausted(_) => SqlError::Internal,
+            | DataFusionError::ResourcesExhausted(_) => {
+                tracing::warn!(error = %err, "DataFusion error mapped to Internal");
+                SqlError::Internal
+            }
 
-            _ => SqlError::Internal,
+            _ => {
+                tracing::warn!(error = %err, "Unknown DataFusion error mapped to Internal");
+                SqlError::Internal
+            }
         }
     }
 
@@ -116,6 +122,7 @@ impl SqlError {
             }
         }
 
+        tracing::warn!(error_message = %msg, "Unhandled DataFusion plan error");
         SqlError::Internal
     }
 }
