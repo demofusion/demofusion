@@ -184,10 +184,10 @@ struct SessionState {
 }
 
 impl SessionState {
-    fn new() -> Arc<Self> {
-        Arc::new(Self {
+    fn new() -> Self {
+        Self {
             started: AtomicBool::new(false),
-        })
+        }
     }
 
     fn mark_started(&self) -> bool {
@@ -426,7 +426,7 @@ impl StreamingSession {
             #[cfg(feature = "gotv")]
             cancel_token: None,
             reject_pipeline_breakers: false,
-            state: SessionState::new(),
+            state: Arc::new(SessionState::new()),
         }
     }
 
@@ -446,7 +446,7 @@ impl StreamingSession {
             batch_size: DEFAULT_LIVE_BATCH_SIZE,
             cancel_token: None,
             reject_pipeline_breakers: false,
-            state: SessionState::new(),
+            state: Arc::new(SessionState::new()),
         }
     }
 
