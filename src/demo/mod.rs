@@ -1,16 +1,19 @@
 //! Demo file parsing for static `.dem` files.
 //!
-//! This module provides `DemoFileSession` for querying static demo files
-//! using the same streaming architecture as live GOTV broadcasts.
+//! This module provides [`DemoSource`] for querying static demo files
+//! using SQL via the [`IntoStreamingSession`](crate::IntoStreamingSession) trait.
 //!
 //! # Example
 //!
 //! ```ignore
-//! use demofusion::demo::DemoFileSession;
+//! use demofusion::demo::DemoSource;
+//! use demofusion::IntoStreamingSession;
 //! use futures::StreamExt;
 //!
-//! // Open a demo file
-//! let mut session = DemoFileSession::open("match.dem").await?;
+//! // Open a demo file and create a session
+//! let source = DemoSource::open("match.dem").await?;
+//! let (mut session, schemas) = source.into_session().await?;
+//!
 //! println!("Available entities: {:?}", session.entity_names());
 //!
 //! // Register queries
@@ -19,18 +22,16 @@
 //! ).await?;
 //!
 //! // Start streaming (parses file in background)
-//! let result = session.start().await?;
+//! let _result = session.start()?;
 //!
 //! // Consume results as they stream
 //! while let Some(batch) = pawns.next().await {
-//!     let batch = batch?;
-//!     println!("Got {} rows", batch.num_rows());
+//!     println!("Got {} rows", batch?.num_rows());
 //! }
-//!
-//! // Check for parser errors
-//! result.parser_handle.await??;
 //! ```
 
 mod session;
+mod source;
 
 pub use session::{DemoFileSession, DemoResult, QueryHandle};
+pub use source::DemoSource;
