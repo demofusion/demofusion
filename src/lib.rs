@@ -12,4 +12,6 @@ pub mod visitor;
 #[cfg(feature = "gotv")]
 pub mod gotv;
 
-pub use session::{IntoStreamingSession, QueryHandle, Schemas, SessionError, SessionResult, StreamingSession};
+pub use session::{
+    IntoStreamingSession, QueryHandle, Schemas, SessionError, SessionResult, StreamingSession,
+};

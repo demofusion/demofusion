@@ -19,11 +19,17 @@ impl GotvSource {
     pub async fn connect(url: &str) -> Result<Self, GotvError> {
         let mut client = BroadcastClient::new(url);
         let start_packet = client.fetch_start().await?;
-        Ok(Self { client, start_packet })
+        Ok(Self {
+            client,
+            start_packet,
+        })
     }
 
     pub fn from_client(client: BroadcastClient, start_packet: Bytes) -> Self {
-        Self { client, start_packet }
+        Self {
+            client,
+            start_packet,
+        }
     }
 }
 
@@ -39,11 +45,8 @@ impl IntoStreamingSession for GotvSource {
             .map(|s| (Arc::clone(&s.serializer_name), s))
             .collect();
 
-        let session = StreamingSession::from_gotv_internal(
-            self.client,
-            schemas.clone(),
-            self.start_packet,
-        );
+        let session =
+            StreamingSession::from_gotv_internal(self.client, schemas.clone(), self.start_packet);
 
         Ok((session, schemas))
     }
