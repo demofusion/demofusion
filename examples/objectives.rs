@@ -150,14 +150,14 @@ async fn track_objectives(mut query: QueryHandle, obj_type: &'static str, object
                         let old_health = obj.health;
                         if health != old_health {
                             let damage = old_health - health;
-                            let pct = if max_health > 0 {
-                                health as f64 / max_health as f64 * 100.0
+                            let pct = if obj.max_health > 0 {
+                                health as f64 / obj.max_health as f64 * 100.0
                             } else {
                                 0.0
                             };
                             println!(
                                 "[{:.1}s] {} team {}: {} -> {} ({:+} dmg, {:.0}%)",
-                                game_seconds, obj_type, team, old_health, health, -damage, pct
+                                game_seconds, obj_type, obj.team, old_health, health, -damage, pct
                             );
                             obj.health = health;
                         }
