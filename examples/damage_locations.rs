@@ -144,10 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "Total damage tracked: {} across {} events",
         total_damage, total_events
     );
-    println!(
-        "Game duration: {:.1} seconds\n",
-        last_tick as f64 / 64.0
-    );
+    println!("Game duration: {:.1} seconds\n", last_tick as f64 / 64.0);
 
     let mut by_location: HashMap<&'static str, (i64, u32)> = HashMap::new();
     for ((gx, gy), cell) in &hotspots {
@@ -158,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut sorted: Vec<_> = by_location.into_iter().collect();
-    sorted.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+    sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
 
     println!("{:<20} {:>12} {:>10}", "Location", "Damage", "Events");
     println!("{}", "-".repeat(44));

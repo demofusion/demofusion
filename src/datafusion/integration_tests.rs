@@ -33,7 +33,11 @@ mod tests {
     }
 
     async fn load_demo_bytes() -> Bytes {
-        Bytes::from(tokio::fs::read(test_demo_path()).await.expect("read demo file"))
+        Bytes::from(
+            tokio::fs::read(test_demo_path())
+                .await
+                .expect("read demo file"),
+        )
     }
 
     // =========================================================================
@@ -433,19 +437,12 @@ mod tests {
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick \
                    LIMIT 50";
 
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            run_query(sql),
-        )
-        .await
-        .expect("JOIN query should complete within 60s");
+        let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
+            .await
+            .expect("JOIN query should complete within 60s");
 
         let first_batch = &batches[0];
-        assert_eq!(
-            first_batch.num_columns(),
-            3,
-            "JOIN should return 3 columns"
-        );
+        assert_eq!(first_batch.num_columns(), 3, "JOIN should return 3 columns");
 
         assert_monotonic_ticks(&batches);
     }
@@ -458,21 +455,14 @@ mod tests {
                    INNER JOIN CCitadelPlayerPawn p ON d.tick = p.tick \
                    LIMIT 50";
 
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            run_query(sql),
-        )
-        .await
-        .expect("JOIN query should complete within 60s");
+        let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
+            .await
+            .expect("JOIN query should complete within 60s");
 
         assert!(!batches.is_empty(), "JOIN should produce results");
 
         let first_batch = &batches[0];
-        assert_eq!(
-            first_batch.num_columns(),
-            3,
-            "JOIN should return 3 columns"
-        );
+        assert_eq!(first_batch.num_columns(), 3, "JOIN should return 3 columns");
 
         assert_monotonic_ticks(&batches);
     }
@@ -508,12 +498,9 @@ mod tests {
             WHERE tick < 1000
         "#;
 
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            run_query(sql),
-        )
-        .await
-        .expect("UNION ALL should complete within 60s");
+        let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
+            .await
+            .expect("UNION ALL should complete within 60s");
 
         assert!(
             total_rows(&batches) > 0,
@@ -532,12 +519,9 @@ mod tests {
             SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent WHERE tick < 10000
         "#;
 
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            run_query(sql),
-        )
-        .await
-        .expect("UNION ALL should complete within 60s");
+        let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
+            .await
+            .expect("UNION ALL should complete within 60s");
 
         assert!(
             total_rows(&batches) > 0,

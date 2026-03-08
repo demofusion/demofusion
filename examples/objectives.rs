@@ -73,12 +73,42 @@ async fn track_objectives(mut query: QueryHandle, obj_type: &'static str, object
             }
         };
 
-        let ticks = batch.column_by_name("tick").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let entity_indices = batch.column_by_name("entity_index").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let delta_types = batch.column_by_name("delta_type").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
-        let teams = batch.column_by_name("m_iTeamNum").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
-        let health_col = batch.column_by_name("m_iHealth").unwrap().as_any().downcast_ref::<Int64Array>().unwrap();
-        let max_health_col = batch.column_by_name("m_iMaxHealth").unwrap().as_any().downcast_ref::<Int64Array>().unwrap();
+        let ticks = batch
+            .column_by_name("tick")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let entity_indices = batch
+            .column_by_name("entity_index")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let delta_types = batch
+            .column_by_name("delta_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let teams = batch
+            .column_by_name("m_iTeamNum")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let health_col = batch
+            .column_by_name("m_iHealth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let max_health_col = batch
+            .column_by_name("m_iMaxHealth")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
 
         let mut objectives = objectives.lock().await;
 
@@ -109,7 +139,10 @@ async fn track_objectives(mut query: QueryHandle, obj_type: &'static str, object
                     );
                 }
                 "delete" => {
-                    println!("[{:.1}s] {} DESTROYED: team {}", game_seconds, obj_type, team);
+                    println!(
+                        "[{:.1}s] {} DESTROYED: team {}",
+                        game_seconds, obj_type, team
+                    );
                     objectives.remove(&key);
                 }
                 "update" => {

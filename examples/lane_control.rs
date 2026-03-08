@@ -70,11 +70,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(result) = query.next().await {
         let batch = result?;
 
-        let ticks = batch.column_by_name("tick").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let entity_indices = batch.column_by_name("entity_index").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let delta_types = batch.column_by_name("delta_type").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
-        let teams = batch.column_by_name("m_iTeamNum").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
-        let cell_x = batch.column_by_name("CBodyComponent__m_cellX").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
+        let ticks = batch
+            .column_by_name("tick")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let entity_indices = batch
+            .column_by_name("entity_index")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let delta_types = batch
+            .column_by_name("delta_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let teams = batch
+            .column_by_name("m_iTeamNum")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let cell_x = batch
+            .column_by_name("CBodyComponent__m_cellX")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
 
         for i in 0..batch.num_rows() {
             let tick = ticks.value(i);

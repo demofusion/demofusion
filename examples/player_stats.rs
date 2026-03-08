@@ -68,17 +68,61 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(result) = query.next().await {
         let batch = result?;
 
-        let ticks = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let entity_indices = batch.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
-        let delta_types = batch.column(2).as_any().downcast_ref::<StringArray>().unwrap();
-        let teams = batch.column(3).as_any().downcast_ref::<UInt64Array>().unwrap();
-        let hero_ids = batch.column(5).as_any().downcast_ref::<Int32Array>().unwrap();
-        let lanes = batch.column(6).as_any().downcast_ref::<Int64Array>().unwrap();
-        let kills = batch.column(7).as_any().downcast_ref::<Int64Array>().unwrap();
-        let deaths = batch.column(8).as_any().downcast_ref::<Int64Array>().unwrap();
-        let assists = batch.column(9).as_any().downcast_ref::<Int64Array>().unwrap();
-        let net_worths = batch.column(10).as_any().downcast_ref::<Int64Array>().unwrap();
-        let levels = batch.column(11).as_any().downcast_ref::<Int64Array>().unwrap();
+        let ticks = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let entity_indices = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let delta_types = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let teams = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let hero_ids = batch
+            .column(5)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let lanes = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let kills = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let deaths = batch
+            .column(8)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let assists = batch
+            .column(9)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let net_worths = batch
+            .column(10)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let levels = batch
+            .column(11)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
 
         let mut current_tick = last_print_tick;
 
@@ -95,7 +139,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     PlayerStats {
                         hero_id: hero_ids.value(i),
                         lane: lanes.value(i),
-                        team: if teams.value(i) == 2 { "Amber" } else { "Sapphire" },
+                        team: if teams.value(i) == 2 {
+                            "Amber"
+                        } else {
+                            "Sapphire"
+                        },
                         kills: kills.value(i),
                         deaths: deaths.value(i),
                         assists: assists.value(i),
@@ -117,18 +165,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             sorted_players.sort_by(|a, b| a.team.cmp(b.team).then(a.lane.cmp(&b.lane)));
 
             for team in ["Amber", "Sapphire"] {
-                let team_players: Vec<_> = sorted_players.iter().filter(|p| p.team == team).collect();
+                let team_players: Vec<_> =
+                    sorted_players.iter().filter(|p| p.team == team).collect();
                 if team_players.is_empty() {
                     continue;
                 }
 
                 println!("\n{} Team:", team);
-                println!("{:<5} {:<8} {:<12} {:<10} {:<6}", "Lane", "Hero", "K/D/A", "Net Worth", "Level");
+                println!(
+                    "{:<5} {:<8} {:<12} {:<10} {:<6}",
+                    "Lane", "Hero", "K/D/A", "Net Worth", "Level"
+                );
                 println!("{}", "-".repeat(45));
 
                 for p in team_players {
                     let kda = format!("{}/{}/{}", p.kills, p.deaths, p.assists);
-                    println!("{:<5} {:<8} {:<12} {:<10} {:<6}", p.lane, p.hero_id, kda, p.net_worth, p.level);
+                    println!(
+                        "{:<5} {:<8} {:<12} {:<10} {:<6}",
+                        p.lane, p.hero_id, kda, p.net_worth, p.level
+                    );
                 }
             }
         }
