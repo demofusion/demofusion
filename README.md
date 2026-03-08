@@ -8,8 +8,8 @@ demofusion enables you to query game state data from Deadlock demos using SQL. I
 
 - **SQL queries** over entity state (players, NPCs, projectiles) and game events (damage, kills, ability usage)
 - **Single-pass streaming** for efficient multi-table queries
-- **Demo file support** via `DemoFileSession`
-- **Live GOTV broadcasts** via `SpectateSession` (requires `gotv` feature)
+- **Demo file support** via `DemoSource`
+- **Live GOTV broadcasts** via `GotvSource` (requires `gotv` feature)
 - **Arrow-native** output via Apache DataFusion
 - **JOIN support** with gate-based backpressure to prevent deadlocks
 
@@ -29,91 +29,120 @@ For live GOTV broadcast support:
 demofusion = { git = "https://github.com/demofusion/demofusion.git", features = ["gotv"] }
 ```
 
-## Usage
-
-### Querying Demo Files
-
-Use `DemoFileSession` for static `.dem` files:
+## Quick Start
 
 ```rust
-use demofusion::demo::DemoFileSession;
+use demofusion::demo::DemoSource;
+use demofusion::session::IntoStreamingSession;
 use futures::StreamExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Open a demo file
-    let mut session = DemoFileSession::open("match.dem").await?;
+    // Load demo file
+    let source = DemoSource::open("match.dem").await?;
     
-    println!("Available entities: {:?}", session.entity_names());
+    // Create session and discover available schemas
+    let (mut session, schemas) = source.into_session().await?;
+    println!("Found {} entity tables", schemas.len());
     
-    // Register SQL queries
-    let mut pawns = session.add_query(
+    // Register a SQL query
+    let mut query = session.add_query(
         "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
     ).await?;
     
-    // Start streaming (parses file in background)
-    let result = session.start().await?;
+    // Start streaming (begins parsing in background)
+    let _handle = session.start()?;
     
     // Consume results as they stream
-    while let Some(batch_result) = pawns.next().await {
-        let batch = batch_result?;
+    while let Some(batch) = query.next().await {
+        let batch = batch?;
         println!("Got {} rows", batch.num_rows());
     }
-    
-    // Check for parser errors
-    result.parser_handle.await??;
     
     Ok(())
 }
 ```
 
-### Streaming Live GOTV Broadcasts
+## API Overview
 
-Use `SpectateSession` (requires `gotv` feature) for live match data:
+demofusion uses a streaming session pattern:
+
+1. **Create a source** - `DemoSource` for files, `GotvSource` for live broadcasts
+2. **Initialize the session** - Call `into_session()` to discover schemas
+3. **Register queries** - Call `add_query()` for each SQL query you need
+4. **Start streaming** - Call `start()` to begin parsing
+5. **Consume results** - Each query handle is a `Stream<Item = Result<RecordBatch>>`
+
+### Loading Demo Files
+
+`DemoSource` supports loading from file paths or byte buffers:
 
 ```rust
-use demofusion::gotv::SpectateSession;
-use tokio_util::sync::CancellationToken;
+use demofusion::demo::DemoSource;
+use demofusion::session::IntoStreamingSession;
+
+// From a file path
+let source = DemoSource::open("match.dem").await?;
+
+// From bytes (useful when demo is already in memory)
+let bytes = tokio::fs::read("match.dem").await?;
+let source = DemoSource::from_bytes(bytes);
+
+// Initialize session - returns session + discovered schemas
+let (mut session, schemas) = source.into_session().await?;
+
+// Inspect available tables
+for schema in &schemas {
+    println!("Table: {} ({} fields)", schema.name(), schema.fields().len());
+}
+```
+
+### Registering Queries
+
+Register SQL queries before calling `start()`. Each call returns a `QueryHandle` that streams results:
+
+```rust
+// Simple entity query
+let mut pawns = session.add_query(
+    "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
+).await?;
+
+// Query with filtering
+let mut low_health = session.add_query(
+    "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn WHERE m_iHealth < 200"
+).await?;
+
+// Event query
+let mut damage = session.add_query(
+    "SELECT tick, damage, entindex_victim FROM DamageEvent"
+).await?;
+```
+
+### Streaming Results
+
+After calling `start()`, consume query results using the `Stream` interface:
+
+```rust
 use futures::StreamExt;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Connect to a GOTV broadcast
-    let mut session = SpectateSession::connect(
-        "http://dist1-ord1.steamcontent.com/tv/18895867"
-    ).await?;
+let _handle = session.start()?;
+
+while let Some(result) = pawns.next().await {
+    let batch: RecordBatch = result?;
     
-    println!("Map: {}", session.map());
-    println!("Available entities: {:?}", session.entity_names());
+    // Access columns by name
+    let health = batch.column_by_name("m_iHealth").unwrap();
     
-    // Register SQL queries - returns handles immediately
-    let mut pawns = session.add_query(
-        "SELECT tick, entity_index FROM CCitadelPlayerPawn"
-    ).await?;
-    
-    // Start streaming (consumes the session)
-    let cancel = CancellationToken::new();
-    let result = session.start(cancel.clone()).await?;
-    
-    // Consume results as they arrive
-    while let Some(batch_result) = pawns.next().await {
-        let batch = batch_result?;
-        println!("Got {} rows", batch.num_rows());
-    }
-    
-    // Wait for parser to complete
-    result.parser_handle.await??;
-    
-    Ok(())
+    // Process rows...
+    println!("Batch with {} rows", batch.num_rows());
 }
 ```
 
 ### Multiple Concurrent Queries
 
-Both `DemoFileSession` and `SpectateSession` support multiple queries against a single parse pass:
+Register multiple queries against a single parse pass, then consume them concurrently:
 
 ```rust
-// Register multiple queries
 let mut pawns = session.add_query(
     "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
 ).await?;
@@ -121,9 +150,9 @@ let mut troopers = session.add_query(
     "SELECT tick, entity_index FROM CNPC_Trooper"
 ).await?;
 
-let result = session.start().await?;
+let _handle = session.start()?;
 
-// Process streams concurrently
+// Process streams concurrently with tokio::select!
 loop {
     tokio::select! {
         Some(batch) = pawns.next() => {
@@ -137,21 +166,70 @@ loop {
 }
 ```
 
-### JOIN Queries
-
-demofusion supports JOIN queries across entity and event tables:
+Or use `tokio::join!` for independent processing:
 
 ```rust
-let mut damage_with_health = session.add_query("
+let _handle = session.start()?;
+
+tokio::join!(
+    async {
+        while let Some(batch) = pawns.next().await {
+            // Process pawn data...
+        }
+    },
+    async {
+        while let Some(batch) = troopers.next().await {
+            // Process trooper data...
+        }
+    }
+);
+```
+
+### JOIN Queries
+
+demofusion supports streaming JOINs across entity and event tables:
+
+```rust
+let mut damage_with_positions = session.add_query("
     SELECT 
         d.tick,
         d.damage,
-        p.m_iHealth as victim_health
+        d.entindex_victim,
+        p.entity_index,
+        p.\"CBodyComponent__m_cellX\",
+        p.\"CBodyComponent__m_cellY\"
     FROM DamageEvent d
-    JOIN CCitadelPlayerPawn p 
-        ON d.tick = p.tick 
-        AND d.victim_player_slot = p.entity_index
+    INNER JOIN CCitadelPlayerPawn p ON d.tick = p.tick
 ").await?;
+```
+
+### Live GOTV Broadcasts
+
+Use `GotvSource` (requires `gotv` feature) for live match data:
+
+```rust
+use demofusion::gotv::GotvSource;
+use demofusion::session::IntoStreamingSession;
+use tokio_util::sync::CancellationToken;
+use futures::StreamExt;
+
+// Connect to a GOTV broadcast
+let source = GotvSource::connect("http://dist1-ord1.steamcontent.com/tv/12345").await?;
+let (session, schemas) = source.into_session().await?;
+
+// Add cancellation support for live streams
+let cancel = CancellationToken::new();
+let mut session = session.with_cancel_token(cancel.clone());
+
+let mut pawns = session.add_query(
+    "SELECT tick, entity_index FROM CCitadelPlayerPawn"
+).await?;
+
+let _handle = session.start()?;
+
+while let Some(batch) = pawns.next().await {
+    println!("Got {} rows", batch?.num_rows());
+}
 ```
 
 ## Entity Tables
@@ -164,8 +242,9 @@ Each Source 2 entity serializer becomes a queryable table. Common entity types i
 | `CCitadelPlayerController` | Player controller data |
 | `CNPC_Trooper` | Lane creeps/troopers |
 | `CNPC_TrooperNeutral` | Neutral jungle creeps |
+| `CNPC_Boss_Tier2` | Walkers |
+| `CNPC_Boss_Tier3` | Patrons |
 | `CCitadelProjectile` | Projectiles in flight |
-| `CCitadelAbility*` | Various ability entities |
 
 All entity tables include these base columns:
 
@@ -173,13 +252,13 @@ All entity tables include these base columns:
 |--------|------|-------------|
 | `tick` | Int32 | Game tick when this row was captured |
 | `entity_index` | Int32 | Unique entity identifier |
-| `delta_type` | Utf8 | Change type: "CREATE", "UPDATE", "DELETE", "LEAVE" |
+| `delta_type` | Utf8 | Change type: `create`, `update`, `delete` |
 
-Additional columns are generated from the entity's serializer fields.
+Additional columns are generated from the entity's serializer fields (e.g., `m_iHealth`, `m_iTeamNum`, `CBodyComponent__m_cellX`).
 
 ## Event Tables
 
-Game events are exposed as tables. Common event types include:
+Game events are exposed as tables:
 
 | Table | Description |
 |-------|-------------|
@@ -190,58 +269,49 @@ Game events are exposed as tables. Common event types include:
 | `AbilitiesChangedEvent` | Ability state changes |
 | `CurrencyChangedEvent` | Currency/souls changes |
 
-## Architecture
+## Examples
 
-demofusion uses a streaming architecture designed for efficient single-pass parsing:
+Run the included examples to see demofusion in action:
 
-```
-Source (File/GOTV) -> Parser -> BatchingDemoVisitor -> DataFusion -> Arrow RecordBatches
-                                       |
-                                       +-> BatchingEntityDispatcher (entities)
-                                       +-> BatchingEventDispatcher (events)
-```
+```bash
+# Track hero positions over time
+cargo run --example hero_positions -- path/to/demo.dem
 
-Key design decisions:
+# Analyze damage hotspots with JOIN queries
+cargo run --release --example damage_locations -- path/to/demo.dem
 
-1. **Single-pass parsing**: Entity updates are routed to multiple tables simultaneously
-2. **Producer-side batching**: Batches are built at the parser, not buffered at consumers
-3. **Gate-based backpressure**: Prevents JOIN deadlocks with global flow control
-4. **Memory bounded**: Configurable batch sizes with automatic backpressure
+# Track objective health (Walkers, Guardians, Patrons)
+cargo run --example objectives -- path/to/demo.dem
 
-### Distribution Channels
+# Monitor trooper spawns and deaths
+cargo run --example troopers -- path/to/demo.dem
 
-For JOIN queries, demofusion uses distribution channels with a shared gate. When a JOIN alternates between left and right inputs, the gate ensures the parser can always send to whichever side the JOIN is currently draining - preventing deadlock.
+# Detect combat engagements
+cargo run --example combat_detection -- path/to/demo.dem
 
-```
-Parser -> Gate -> [Channel A] -> JOIN Left
-              \-> [Channel B] -> JOIN Right
-
-Gate blocks only when ALL channels are full, not when any single channel is full.
+# Calculate player statistics
+cargo run --example player_stats -- path/to/demo.dem
 ```
 
 ## Configuration
 
 ### Batch Size
 
-Control the number of rows per batch:
+Control the number of rows per `RecordBatch`:
 
 ```rust
-// DemoFileSession: default 1024 (optimized for throughput)
-let session = DemoFileSession::open("match.dem").await?
-    .with_batch_size(2048);
+let (mut session, _) = source.into_session().await?;
 
-// SpectateSession: default 128 (optimized for latency)
-let session = SpectateSession::connect(url).await?
-    .with_batch_size(256);
+// Larger batches for throughput (default: 1024)
+let session = session.with_batch_size(2048);
 ```
 
 ### Pipeline Breaker Rejection
 
-Reject queries that would cause unbounded memory usage:
+Reject queries that require unbounded memory (e.g., `ORDER BY`, `GROUP BY` without streaming):
 
 ```rust
-let mut session = DemoFileSession::open("match.dem").await?
-    .with_reject_pipeline_breakers(true);
+let session = session.with_reject_pipeline_breakers(true);
 
 // This will now fail because ORDER BY requires buffering all data
 let result = session.add_query(
@@ -250,26 +320,29 @@ let result = session.add_query(
 assert!(result.is_err());
 ```
 
-### Streaming Statistics
+## Architecture
 
-Monitor memory usage and throughput:
+demofusion uses a streaming architecture for efficient single-pass parsing:
 
-```rust
-let result = session.start().await?;
-
-if let Some(stats) = &result.stats {
-    let snapshot = stats.snapshot();
-    println!("Batches sent: {}", snapshot.batches_sent);
-    println!("Rows produced: {}", snapshot.rows_produced);
-    println!("Gate blocked count: {}", snapshot.gate_blocked_count);
-}
 ```
+Source (File/GOTV) -> Parser -> Visitor -> DataFusion -> Arrow RecordBatches
+                                  |
+                                  +-> EntityDispatcher (entities by type)
+                                  +-> EventDispatcher (game events)
+```
+
+Key design decisions:
+
+1. **Single-pass parsing**: The demo is parsed once; entity updates are routed to multiple query consumers simultaneously
+2. **Producer-side batching**: RecordBatches are built at the parser, minimizing downstream buffering
+3. **Gate-based backpressure**: Prevents JOIN deadlocks with global flow control across distribution channels
+4. **Memory bounded**: Configurable batch sizes with automatic backpressure when consumers fall behind
 
 ## Feature Flags
 
 | Feature | Description |
 |---------|-------------|
-| `gotv` | Enables `SpectateSession` for live GOTV broadcast streaming |
+| `gotv` | Enables `GotvSource` for live GOTV broadcast streaming |
 
 ## License
 
