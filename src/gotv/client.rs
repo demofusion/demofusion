@@ -314,10 +314,10 @@ impl BroadcastClient {
                 }
             };
 
-            debug!(target: "demofusion::gotv", 
-                map = %sync.map, 
-                fragment = sync.fragment, 
-                tick = sync.tick, 
+            debug!(target: "demofusion::gotv",
+                map = %sync.map,
+                fragment = sync.fragment,
+                tick = sync.tick,
                 "sync complete"
             );
 
