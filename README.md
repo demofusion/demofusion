@@ -293,6 +293,56 @@ cargo run --example combat_detection -- path/to/demo.dem
 cargo run --example player_stats -- path/to/demo.dem
 ```
 
+## Important: Consuming All Query Streams
+
+**All registered query streams must be consumed concurrently for parsing to proceed.**
+
+demofusion uses backpressure to bound memory usage. The parser blocks when any query's internal channel fills up. If you register multiple queries but only consume one, the parser will eventually block waiting for the unconsumed query's channel to drain—causing a deadlock.
+
+```rust
+// WRONG: Only consuming one query will deadlock
+let mut pawns = session.add_query("SELECT * FROM CCitadelPlayerPawn").await?;
+let mut troopers = session.add_query("SELECT * FROM CNPC_Trooper").await?;
+let _handle = session.start()?;
+
+// This will hang once the troopers channel fills up!
+while let Some(batch) = pawns.next().await {
+    println!("{} rows", batch?.num_rows());
+}
+```
+
+```rust
+// CORRECT: Consume all queries concurrently
+let mut pawns = session.add_query("SELECT * FROM CCitadelPlayerPawn").await?;
+let mut troopers = session.add_query("SELECT * FROM CNPC_Trooper").await?;
+let _handle = session.start()?;
+
+tokio::join!(
+    async {
+        while let Some(batch) = pawns.next().await {
+            let _ = batch.unwrap();
+        }
+    },
+    async {
+        while let Some(batch) = troopers.next().await {
+            let _ = batch.unwrap();
+        }
+    }
+);
+```
+
+Alternatively, use `tokio::select!` to process whichever stream has data available:
+
+```rust
+loop {
+    tokio::select! {
+        Some(batch) = pawns.next() => { /* process */ }
+        Some(batch) = troopers.next() => { /* process */ }
+        else => break,
+    }
+}
+```
+
 ## Configuration
 
 ### Batch Size
