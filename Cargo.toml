@@ -102,3 +102,7 @@ path = "examples/lane_control.rs"
 [[example]]
 name = "multi_query"
 path = "examples/multi_query.rs"
+
+[[example]]
+name = "damage_locations"
+path = "examples/damage_locations.rs"
