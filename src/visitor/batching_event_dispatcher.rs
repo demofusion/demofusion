@@ -96,13 +96,17 @@ impl BatchingEventDispatcher {
                         .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
 
-                    // Record batch stats before sending
+                    let rows = batch.num_rows();
+                    let gate_blocked = swb.sender.is_gate_blocked();
+
                     if let Some(stats) = &self.stats {
-                        stats.record_batch_sent(batch.num_rows() as u64);
-                        if swb.sender.is_gate_blocked() {
+                        stats.record_batch_sent(rows as u64);
+                        if gate_blocked {
                             stats.record_gate_blocked();
                         }
                     }
+
+                    trace!(target: "demofusion::dispatcher", rows, gate_blocked, "sending event batch");
 
                     swb.sender
                         .send(batch)

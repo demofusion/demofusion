@@ -39,6 +39,7 @@ use reqwest::Client;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, trace, warn};
 
 use super::config::ClientConfig;
 use super::error::GotvError;
@@ -270,12 +271,15 @@ impl BroadcastClient {
         let start_time = Instant::now();
         let mut attempt = 0u32;
 
+        debug!(target: "demofusion::gotv", %url, "syncing broadcast");
+
         loop {
             if self.is_cancelled() {
                 return Err(GotvError::Cancelled);
             }
 
             if start_time.elapsed() >= self.config.sync_timeout {
+                warn!(target: "demofusion::gotv", timeout_secs = ?self.config.sync_timeout, attempts = attempt, "sync timeout");
                 return Err(GotvError::BroadcastNotReady);
             }
 
@@ -287,6 +291,7 @@ impl BroadcastClient {
                 Ok(resp) => resp,
                 Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
                     let delay = self.config.backoff_delay(attempt);
+                    debug!(target: "demofusion::gotv", attempt, error = %e, delay_ms = delay.as_millis(), "sync request failed, retrying");
                     self.sleep_cancellable(delay).await?;
                     continue;
                 }
@@ -295,6 +300,7 @@ impl BroadcastClient {
 
             if !response.status().is_success() {
                 let delay = self.config.backoff_delay(attempt);
+                debug!(target: "demofusion::gotv", attempt, status = %response.status(), delay_ms = delay.as_millis(), "sync non-success status, retrying");
                 self.sleep_cancellable(delay).await?;
                 continue;
             }
@@ -307,6 +313,13 @@ impl BroadcastClient {
                     continue;
                 }
             };
+
+            debug!(target: "demofusion::gotv", 
+                map = %sync.map, 
+                fragment = sync.fragment, 
+                tick = sync.tick, 
+                "sync complete"
+            );
 
             self.stream_fragment = sync.fragment;
             self.keyframe_interval = Duration::from_secs(sync.keyframe_interval as u64);
@@ -329,6 +342,7 @@ impl BroadcastClient {
         }
 
         if let Some(ref packet) = self.start_packet {
+            debug!(target: "demofusion::gotv", bytes = packet.len(), "returning cached start packet");
             return Ok(packet.clone());
         }
 
@@ -336,12 +350,15 @@ impl BroadcastClient {
         let start_time = Instant::now();
         let mut attempt = 0u32;
 
+        debug!(target: "demofusion::gotv", %url, "fetching start packet");
+
         loop {
             if self.is_cancelled() {
                 return Err(GotvError::Cancelled);
             }
 
             if start_time.elapsed() >= self.config.start_timeout {
+                warn!(target: "demofusion::gotv", timeout_secs = ?self.config.start_timeout, attempts = attempt, "start packet timeout");
                 return Err(GotvError::BroadcastNotReady);
             }
 
@@ -353,6 +370,7 @@ impl BroadcastClient {
                 Ok(resp) => resp,
                 Err(e) if e.is_timeout() || e.is_connect() || e.is_request() => {
                     let delay = self.config.backoff_delay(attempt);
+                    debug!(target: "demofusion::gotv", attempt, error = %e, delay_ms = delay.as_millis(), "start request failed, retrying");
                     self.sleep_cancellable(delay).await?;
                     continue;
                 }
@@ -361,11 +379,13 @@ impl BroadcastClient {
 
             if !response.status().is_success() {
                 let delay = self.config.backoff_delay(attempt);
+                debug!(target: "demofusion::gotv", attempt, status = %response.status(), delay_ms = delay.as_millis(), "start non-success status, retrying");
                 self.sleep_cancellable(delay).await?;
                 continue;
             }
 
             let content = response.bytes().await?;
+            debug!(target: "demofusion::gotv", bytes = content.len(), "received start packet");
             self.stats.bytes_downloaded += content.len() as u64;
             self.start_packet = Some(content.clone());
 
@@ -385,45 +405,38 @@ impl BroadcastClient {
             self.sync().await?;
         }
 
-        eprintln!("[gotv] stream_to_channel: starting, state={}", self.state());
+        debug!(target: "demofusion::gotv", state = %self.state(), "stream_to_channel starting");
 
         let reason = loop {
             if self.is_cancelled() {
-                eprintln!("[gotv] stream_to_channel: cancelled");
+                debug!(target: "demofusion::gotv", "stream_to_channel cancelled");
                 break StreamEndReason::Cancelled;
             }
 
             match self.fetch_next().await {
                 Ok(Some(packet)) => {
-                    eprintln!(
-                        "[gotv] stream_to_channel: sending {} bytes, state={}",
-                        packet.len(),
-                        self.state()
-                    );
+                    trace!(target: "demofusion::gotv", bytes = packet.len(), state = %self.state(), "sending packet");
                     if tx.send(packet).await.is_err() {
-                        eprintln!("[gotv] stream_to_channel: channel closed");
+                        debug!(target: "demofusion::gotv", "channel closed");
                         break StreamEndReason::ChannelClosed;
                     }
                 }
                 Ok(None) => {
-                    eprintln!(
-                        "[gotv] stream_to_channel: fetch_next returned None, state={}",
-                        self.state()
-                    );
+                    trace!(target: "demofusion::gotv", state = %self.state(), "fetch_next returned None");
                     continue;
                 }
                 Err(GotvError::BroadcastEnded) => {
-                    eprintln!("[gotv] stream_to_channel: broadcast ended");
+                    info!(target: "demofusion::gotv", "broadcast ended");
                     break StreamEndReason::BroadcastEnded;
                 }
                 Err(e) => {
-                    eprintln!("[gotv] stream_to_channel: error: {}", e);
+                    error!(target: "demofusion::gotv", error = %e, "stream error");
                     return Err(e);
                 }
             }
         };
 
-        eprintln!("[gotv] stream_to_channel: finished, reason={:?}", reason);
+        debug!(target: "demofusion::gotv", ?reason, bytes_downloaded = self.stats.bytes_downloaded, fragments = self.stats.fragments, "stream_to_channel finished");
         Ok(StreamResult {
             stats: self.stats,
             reason,
@@ -442,21 +455,18 @@ impl BroadcastClient {
     async fn handle_start(&mut self) -> Result<Option<Bytes>, GotvError> {
         // If already fetched via fetch_start(), use cached packet
         if let Some(ref packet) = self.start_packet {
-            eprintln!(
-                "[gotv] handle_start: returning cached start packet ({} bytes)",
-                packet.len()
-            );
+            debug!(target: "demofusion::gotv", bytes = packet.len(), "returning cached start packet");
             self.state = StreamState::FullFrame;
             return Ok(Some(packet.clone()));
         }
 
         let url = self.build_start_url();
-        eprintln!("[gotv] handle_start: fetching {}", url);
+        debug!(target: "demofusion::gotv", %url, "fetching start packet");
         let response = self.client.get(&url).send().await?;
         response.error_for_status_ref()?;
 
         let content = response.bytes().await?;
-        eprintln!("[gotv] handle_start: got {} bytes", content.len());
+        debug!(target: "demofusion::gotv", bytes = content.len(), "received start packet");
         self.stats.bytes_downloaded += content.len() as u64;
         self.start_packet = Some(content.clone());
         self.state = StreamState::FullFrame;
@@ -466,16 +476,13 @@ impl BroadcastClient {
 
     async fn handle_fullframe(&mut self) -> Result<Option<Bytes>, GotvError> {
         let url = self.build_fragment_url(self.stream_fragment, FragmentType::Full);
-        eprintln!(
-            "[gotv] handle_fullframe: fetching {} (fragment {})",
-            url, self.stream_fragment
-        );
+        debug!(target: "demofusion::gotv", %url, fragment = self.stream_fragment, "fetching fullframe");
 
         let response = self.client.get(&url).send().await?;
         response.error_for_status_ref()?;
 
         let content = response.bytes().await?;
-        eprintln!("[gotv] handle_fullframe: got {} bytes", content.len());
+        debug!(target: "demofusion::gotv", bytes = content.len(), "received fullframe");
         self.stats.bytes_downloaded += content.len() as u64;
         self.stats.fragments += 1;
         self.state = StreamState::DeltaFrames;
@@ -488,54 +495,46 @@ impl BroadcastClient {
 
         while retries < self.config.delta_retries {
             if self.is_cancelled() {
-                eprintln!("[gotv] delta: cancelled");
+                debug!(target: "demofusion::gotv", "delta fetch cancelled");
                 return Ok(None);
             }
 
             let url = self.build_fragment_url(self.stream_fragment, FragmentType::Delta);
-            eprintln!("[gotv] delta: fetching {}", url);
+            trace!(target: "demofusion::gotv", %url, "fetching delta");
 
             let response = match self.client.get(&url).send().await {
                 Ok(r) => r,
                 Err(e) => {
-                    eprintln!("[gotv] delta: request error: {}", e);
+                    warn!(target: "demofusion::gotv", error = %e, "delta request error");
                     return Err(GotvError::Http(e));
                 }
             };
 
-            eprintln!("[gotv] delta: status {}", response.status());
+            trace!(target: "demofusion::gotv", status = %response.status(), "delta response");
 
             if response.status() == reqwest::StatusCode::NOT_FOUND {
                 retries += 1;
-                eprintln!(
-                    "[gotv] delta: 404, retry {} of {}",
-                    retries, self.config.delta_retries
-                );
+                debug!(target: "demofusion::gotv", retries, max_retries = self.config.delta_retries, "delta 404, retrying");
                 self.sleep_cancellable(self.keyframe_interval).await?;
                 continue;
             }
 
             if let Err(e) = response.error_for_status_ref() {
-                eprintln!("[gotv] delta: HTTP error: {}", e);
+                warn!(target: "demofusion::gotv", error = %e, "delta HTTP error");
                 return Err(GotvError::Http(e));
             }
 
             let content = match response.bytes().await {
                 Ok(b) => b,
                 Err(e) => {
-                    // Skip corrupt fragment
-                    eprintln!("[gotv] delta: body error (skipping): {}", e);
+                    warn!(target: "demofusion::gotv", error = %e, "delta body error, skipping fragment");
                     self.stats.fragments_skipped += 1;
                     self.stream_fragment += 1;
                     return Ok(None);
                 }
             };
 
-            eprintln!(
-                "[gotv] delta: got {} bytes for fragment {}",
-                content.len(),
-                self.stream_fragment
-            );
+            trace!(target: "demofusion::gotv", bytes = content.len(), fragment = self.stream_fragment, "received delta");
             self.stats.bytes_downloaded += content.len() as u64;
             self.stats.fragments += 1;
             self.stream_fragment += 1;
@@ -543,8 +542,7 @@ impl BroadcastClient {
             return Ok(Some(content));
         }
 
-        // Max retries exceeded - broadcast ended
-        eprintln!("[gotv] delta: max retries exceeded, broadcast ended");
+        info!(target: "demofusion::gotv", "max retries exceeded, broadcast ended");
         self.state = StreamState::Stop;
         Err(GotvError::BroadcastEnded)
     }
