@@ -74,3 +74,31 @@ heck = "0.5"
 
 [profile.release]
 debug = true
+
+[[example]]
+name = "hero_positions"
+path = "examples/hero_positions.rs"
+
+[[example]]
+name = "combat_detection"
+path = "examples/combat_detection.rs"
+
+[[example]]
+name = "player_stats"
+path = "examples/player_stats.rs"
+
+[[example]]
+name = "troopers"
+path = "examples/troopers.rs"
+
+[[example]]
+name = "objectives"
+path = "examples/objectives.rs"
+
+[[example]]
+name = "lane_control"
+path = "examples/lane_control.rs"
+
+[[example]]
+name = "multi_query"
+path = "examples/multi_query.rs"
