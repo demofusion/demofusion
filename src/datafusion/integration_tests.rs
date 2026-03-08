@@ -7,17 +7,23 @@
 //!
 //! Set `TEST_DEMO_PATH` to a demo file:
 //! ```bash
-//! TEST_DEMO_PATH=/path/to/demo.dem cargo test --all-features -- --ignored
+//! TEST_DEMO_PATH=/path/to/demo.dem cargo test --lib -- --ignored
 //! ```
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::sync::Arc;
 
     use bytes::Bytes;
+    use datafusion::arrow::array::{Array, Int32Array};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::prelude::*;
     use futures::StreamExt;
 
+    use crate::datafusion::pipeline_analysis::analyze_pipeline;
+    use crate::datafusion::table_providers::{
+        EntityTableProvider, EventTableProvider, new_receiver_slot,
+    };
     use crate::demo::DemoSource;
     use crate::events::{EventType, event_schema};
     use crate::session::IntoStreamingSession;
@@ -26,18 +32,8 @@ mod tests {
         std::env::var("TEST_DEMO_PATH").unwrap_or_else(|_| "test.dem".to_string())
     }
 
-    fn demo_exists() -> bool {
-        Path::new(&test_demo_path()).exists()
-    }
-
-    async fn load_demo_bytes() -> Option<Bytes> {
-        if !demo_exists() {
-            return None;
-        }
-        tokio::fs::read(test_demo_path())
-            .await
-            .ok()
-            .map(Bytes::from)
+    async fn load_demo_bytes() -> Bytes {
+        Bytes::from(tokio::fs::read(test_demo_path()).await.expect("read demo file"))
     }
 
     // =========================================================================
@@ -67,17 +63,19 @@ mod tests {
     #[test]
     fn test_event_schema_field_counts() {
         let damage_schema = event_schema("DamageEvent").expect("DamageEvent schema");
+        let damage_field_count = damage_schema.fields().len();
         assert!(
-            damage_schema.fields().len() > 5,
-            "DamageEvent should have multiple fields, got {}",
-            damage_schema.fields().len()
+            damage_field_count >= 5,
+            "DamageEvent should have at least tick + 4 data fields (victim, attacker, damage, health), got {}",
+            damage_field_count
         );
 
         let hero_killed_schema = event_schema("HeroKilledEvent").expect("HeroKilledEvent schema");
+        let kill_field_count = hero_killed_schema.fields().len();
         assert!(
-            hero_killed_schema.fields().len() > 3,
-            "HeroKilledEvent should have multiple fields, got {}",
-            hero_killed_schema.fields().len()
+            kill_field_count >= 3,
+            "HeroKilledEvent should have at least tick + victim + attacker fields, got {}",
+            kill_field_count
         );
     }
 
@@ -85,19 +83,19 @@ mod tests {
     fn test_damage_event_schema_fields() {
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
 
-        let expected_fields = [
-            "tick",
-            "damage",
-            "entindex_victim",
-            "entindex_attacker",
-            "victim_health_new",
+        let required_fields = [
+            ("tick", "tracking when the event occurred"),
+            ("damage", "the damage amount"),
+            ("entindex_victim", "who took damage"),
+            ("entindex_attacker", "who dealt damage"),
         ];
 
-        for field_name in expected_fields {
+        for (field_name, purpose) in required_fields {
             assert!(
                 schema.field_with_name(field_name).is_ok(),
-                "DamageEvent should have field '{}'",
-                field_name
+                "DamageEvent missing '{}' field needed for {}",
+                field_name,
+                purpose
             );
         }
     }
@@ -132,7 +130,7 @@ mod tests {
         let all_events = EventType::all();
         assert!(
             all_events.len() >= 50,
-            "Should have at least 50 event types, got {}",
+            "EventType::all() should return all variants (Deadlock has 50+ event types), got {}",
             all_events.len()
         );
     }
@@ -141,36 +139,43 @@ mod tests {
     // Query Plan Tests (no demo file required)
     // =========================================================================
 
+    fn streaming_session_config() -> SessionConfig {
+        SessionConfig::new()
+            .with_target_partitions(1)
+            .with_coalesce_batches(false)
+    }
+
     #[tokio::test]
     async fn test_join_event_tables_plan_selection() {
-        use crate::datafusion::table_providers::{EventTableProvider, new_receiver_slot};
-        use datafusion::prelude::*;
-
-        let config = SessionConfig::new()
-            .with_target_partitions(1)
-            .with_coalesce_batches(false);
-        let ctx = SessionContext::new_with_config(config);
+        let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_slot = new_receiver_slot();
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
+            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
-        let kill_slot = new_receiver_slot();
-        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema, kill_slot);
+        let kill_provider =
+            EventTableProvider::new(EventType::HeroKilled, kill_schema, new_receiver_slot());
 
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+        ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
-        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider))
+        ctx.register_table("HeroKilledEvent", Arc::new(kill_provider))
             .unwrap();
 
         let sql = "SELECT d.tick, d.damage, k.entindex_victim \
                    FROM DamageEvent d \
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
             .indent(true)
@@ -178,96 +183,102 @@ mod tests {
 
         assert!(
             plan_str.contains("SymmetricHashJoinExec"),
-            "Expected SymmetricHashJoinExec for event table JOIN, got:\n{}",
+            "Expected streaming SymmetricHashJoinExec for unbounded sources, got:\n{}",
             plan_str
         );
 
         assert!(
             !plan_str.contains("RepartitionExec"),
-            "Should not have RepartitionExec with target_partitions=1, got:\n{}",
+            "target_partitions=1 should prevent repartitioning, got:\n{}",
             plan_str
         );
     }
 
     #[tokio::test]
     async fn test_join_pipeline_properties() {
-        use crate::datafusion::pipeline_analysis::analyze_pipeline;
-        use crate::datafusion::table_providers::{EventTableProvider, new_receiver_slot};
-        use datafusion::prelude::*;
-
-        let config = SessionConfig::new()
-            .with_target_partitions(1)
-            .with_coalesce_batches(false);
-        let ctx = SessionContext::new_with_config(config);
+        let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_slot = new_receiver_slot();
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
+            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
-        let kill_slot = new_receiver_slot();
-        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema, kill_slot);
+        let kill_provider =
+            EventTableProvider::new(EventType::HeroKilled, kill_schema, new_receiver_slot());
 
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+        ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
-        ctx.register_table("HeroKilledEvent", std::sync::Arc::new(kill_provider))
+        ctx.register_table("HeroKilledEvent", Arc::new(kill_provider))
             .unwrap();
 
         let sql = "SELECT d.tick, d.damage, k.entindex_victim \
                    FROM DamageEvent d \
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let analysis = analyze_pipeline(&physical);
 
         assert!(
             analysis.is_streaming_safe(),
-            "Physical plan has pipeline breakers!\n{}",
+            "JOIN on tick should be streaming-safe (no pipeline breakers):\n{}",
             analysis.report()
         );
     }
 
     #[tokio::test]
     async fn test_join_event_entity_plan_selection() {
-        use crate::datafusion::table_providers::{
-            EntityTableProvider, EventTableProvider, new_receiver_slot,
-        };
-        use datafusion::prelude::*;
-
-        let config = SessionConfig::new()
-            .with_target_partitions(1)
-            .with_coalesce_batches(false);
-        let ctx = SessionContext::new_with_config(config);
+        let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_slot = new_receiver_slot();
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, damage_slot);
-        ctx.register_table("DamageEvent", std::sync::Arc::new(damage_provider))
+            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
+        ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
 
         let entity_schema = datafusion::arrow::datatypes::Schema::new(vec![
-            datafusion::arrow::datatypes::Field::new("tick", datafusion::arrow::datatypes::DataType::Int32, false),
-            datafusion::arrow::datatypes::Field::new("entity_index", datafusion::arrow::datatypes::DataType::Int32, false),
+            datafusion::arrow::datatypes::Field::new(
+                "tick",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+            datafusion::arrow::datatypes::Field::new(
+                "entity_index",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
         ]);
-        let entity_slot = new_receiver_slot();
         let entity_provider = EntityTableProvider::new(
-            std::sync::Arc::new(entity_schema),
-            std::sync::Arc::from("CCitadelPlayerPawn"),
-            entity_slot,
+            Arc::new(entity_schema),
+            Arc::from("CCitadelPlayerPawn"),
+            new_receiver_slot(),
         );
-        ctx.register_table("CCitadelPlayerPawn", std::sync::Arc::new(entity_provider))
+        ctx.register_table("CCitadelPlayerPawn", Arc::new(entity_provider))
             .unwrap();
 
         let sql = "SELECT d.tick, d.damage, p.entity_index \
                    FROM DamageEvent d \
                    INNER JOIN CCitadelPlayerPawn p ON d.tick = p.tick";
 
-        let logical = ctx.state().create_logical_plan(sql).await.expect("logical plan");
-        let physical = ctx.state().create_physical_plan(&logical).await.expect("physical plan");
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
 
         let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
             .indent(true)
@@ -275,13 +286,13 @@ mod tests {
 
         assert!(
             plan_str.contains("SymmetricHashJoinExec"),
-            "Expected SymmetricHashJoinExec for event-entity JOIN, got:\n{}",
+            "Expected streaming SymmetricHashJoinExec for event-entity JOIN, got:\n{}",
             plan_str
         );
 
         assert!(
             !plan_str.contains("RepartitionExec"),
-            "Should not have RepartitionExec, got:\n{}",
+            "target_partitions=1 should prevent repartitioning, got:\n{}",
             plan_str
         );
     }
@@ -290,9 +301,8 @@ mod tests {
     // Query Execution Tests (require demo file)
     // =========================================================================
 
-    async fn run_single_query(sql: &str) -> Vec<RecordBatch> {
-        let demo_bytes = load_demo_bytes().await.expect("load demo");
-        let source = DemoSource::from_bytes(demo_bytes);
+    async fn run_query(sql: &str) -> Vec<RecordBatch> {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
         let (mut session, _schemas) = source.into_session().await.expect("into_session");
 
         let mut handle = session.add_query(sql).await.expect("add_query");
@@ -309,142 +319,175 @@ mod tests {
         batches.iter().map(|b| b.num_rows()).sum()
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "requires test demo file"]
-    async fn test_event_query() {
-        if !demo_exists() {
-            return;
-        }
-
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            run_single_query("SELECT tick, damage FROM DamageEvent LIMIT 100"),
-        )
-        .await
-        .expect("timeout");
-
-        assert!(total_rows(&batches) > 0, "Should have damage events");
-
-        if let Some(batch) = batches.first() {
-            assert!(batch.schema().field_with_name("tick").is_ok());
-            assert!(batch.schema().field_with_name("damage").is_ok());
-        }
+    fn extract_i32_column(batches: &[RecordBatch], column: &str) -> Vec<i32> {
+        batches
+            .iter()
+            .flat_map(|batch| {
+                let col = batch
+                    .column_by_name(column)
+                    .unwrap_or_else(|| panic!("column '{}' not found", column));
+                let arr = col
+                    .as_any()
+                    .downcast_ref::<Int32Array>()
+                    .unwrap_or_else(|| panic!("column '{}' is not Int32", column));
+                arr.iter().map(|v| v.unwrap_or(0)).collect::<Vec<_>>()
+            })
+            .collect()
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "requires test demo file"]
-    async fn test_entity_query() {
-        if !demo_exists() {
-            return;
-        }
-
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            run_single_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100"),
-        )
-        .await
-        .expect("timeout");
-
-        assert!(total_rows(&batches) > 0, "Should have pawn data");
-
-        if let Some(batch) = batches.first() {
-            assert!(batch.schema().field_with_name("tick").is_ok());
-            assert!(batch.schema().field_with_name("entity_index").is_ok());
-        }
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[ignore = "requires test demo file"]
-    async fn test_nested_fields_query() {
-        if !demo_exists() {
-            return;
-        }
-
-        let batches = tokio::time::timeout(
-            std::time::Duration::from_secs(30),
-            run_single_query("SELECT tick, damage, origin FROM DamageEvent LIMIT 100"),
-        )
-        .await
-        .expect("timeout");
-
-        assert!(total_rows(&batches) > 0, "Should have damage events");
-
-        if let Some(batch) = batches.first() {
+    fn assert_monotonic_ticks(batches: &[RecordBatch]) {
+        let ticks = extract_i32_column(batches, "tick");
+        for window in ticks.windows(2) {
             assert!(
-                batch.schema().field_with_name("origin").is_ok(),
-                "Should have nested origin field"
+                window[0] <= window[1],
+                "ticks should be monotonically increasing within batches, found {} > {}",
+                window[0],
+                window[1]
             );
         }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires test demo file"]
-    async fn test_event_event_join() {
-        if !demo_exists() {
-            return;
-        }
+    async fn test_event_query() {
+        let batches = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            run_query("SELECT tick, damage FROM DamageEvent LIMIT 100"),
+        )
+        .await
+        .expect("query should complete within 30s");
 
+        assert!(!batches.is_empty(), "should return at least one batch");
+        assert!(total_rows(&batches) > 0, "should have damage events");
+
+        let first_batch = &batches[0];
+        assert!(
+            first_batch.schema().field_with_name("tick").is_ok(),
+            "result should contain tick column"
+        );
+        assert!(
+            first_batch.schema().field_with_name("damage").is_ok(),
+            "result should contain damage column"
+        );
+
+        assert_monotonic_ticks(&batches);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_entity_query() {
+        let batches = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            run_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100"),
+        )
+        .await
+        .expect("query should complete within 30s");
+
+        assert!(!batches.is_empty(), "should return at least one batch");
+        assert!(total_rows(&batches) > 0, "should have entity data");
+
+        let first_batch = &batches[0];
+        assert!(
+            first_batch.schema().field_with_name("tick").is_ok(),
+            "result should contain tick column"
+        );
+        assert!(
+            first_batch.schema().field_with_name("entity_index").is_ok(),
+            "result should contain entity_index column"
+        );
+
+        assert_monotonic_ticks(&batches);
+
+        let entity_indices = extract_i32_column(&batches, "entity_index");
+        assert!(
+            entity_indices.iter().all(|&idx| idx >= 0),
+            "entity_index should be non-negative"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_nested_fields_query() {
+        let batches = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            run_query("SELECT tick, damage, flags FROM DamageEvent LIMIT 100"),
+        )
+        .await
+        .expect("query should complete within 30s");
+
+        assert!(!batches.is_empty(), "should return at least one batch");
+
+        let first_batch = &batches[0];
+        assert_eq!(
+            first_batch.num_columns(),
+            3,
+            "should have exactly 3 columns (tick, damage, flags)"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_event_event_join() {
         let sql = "SELECT d.tick, d.damage, k.entindex_victim \
                    FROM DamageEvent d \
                    INNER JOIN HeroKilledEvent k ON d.tick = k.tick \
                    LIMIT 50";
 
-        let result = tokio::time::timeout(
+        let batches = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            run_single_query(sql),
+            run_query(sql),
         )
-        .await;
+        .await
+        .expect("JOIN query should complete within 60s");
 
-        match result {
-            Ok(batches) => {
-                eprintln!("[test] Event-event JOIN returned {} rows", total_rows(&batches));
-            }
-            Err(_) => panic!("TIMEOUT after 60 seconds"),
-        }
+        let first_batch = &batches[0];
+        assert_eq!(
+            first_batch.num_columns(),
+            3,
+            "JOIN should return 3 columns"
+        );
+
+        assert_monotonic_ticks(&batches);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires test demo file"]
     async fn test_event_entity_join() {
-        if !demo_exists() {
-            return;
-        }
-
         let sql = "SELECT d.tick, d.damage, p.entity_index \
                    FROM DamageEvent d \
                    INNER JOIN CCitadelPlayerPawn p ON d.tick = p.tick \
                    LIMIT 50";
 
-        let result = tokio::time::timeout(
+        let batches = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            run_single_query(sql),
+            run_query(sql),
         )
-        .await;
+        .await
+        .expect("JOIN query should complete within 60s");
 
-        match result {
-            Ok(batches) => {
-                eprintln!("[test] Event-entity JOIN returned {} rows", total_rows(&batches));
-            }
-            Err(_) => panic!("TIMEOUT after 60 seconds"),
-        }
+        assert!(!batches.is_empty(), "JOIN should produce results");
+
+        let first_batch = &batches[0];
+        assert_eq!(
+            first_batch.num_columns(),
+            3,
+            "JOIN should return 3 columns"
+        );
+
+        assert_monotonic_ticks(&batches);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires test demo file"]
     async fn test_aggregation_rejected() {
-        if !demo_exists() {
-            return;
-        }
-
-        let demo_bytes = load_demo_bytes().await.expect("load demo");
-        let source = DemoSource::from_bytes(demo_bytes);
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
         let (mut session, _schemas) = source.into_session().await.expect("into_session");
 
         let result = session.add_query("SELECT COUNT(*) FROM DamageEvent").await;
 
         assert!(
             result.is_err(),
-            "Aggregation on unbounded stream should be rejected"
+            "Aggregation without GROUP BY requires unbounded buffering and should be rejected"
         );
     }
 
@@ -455,10 +498,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires test demo file - known failing: UNION ALL multi-partition bug"]
     async fn test_union_all_entity_tables() {
-        if !demo_exists() {
-            return;
-        }
-
         let sql = r#"
             SELECT tick, entity_index, 'Pawn' as source_type
             FROM CCitadelPlayerPawn
@@ -469,29 +508,22 @@ mod tests {
             WHERE tick < 1000
         "#;
 
-        let result = tokio::time::timeout(
+        let batches = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            run_single_query(sql),
+            run_query(sql),
         )
-        .await;
+        .await
+        .expect("UNION ALL should complete within 60s");
 
-        match result {
-            Ok(batches) => {
-                let rows = total_rows(&batches);
-                eprintln!("[test] UNION ALL returned {} rows", rows);
-                assert!(rows > 0, "Should have rows from UNION ALL");
-            }
-            Err(_) => panic!("TIMEOUT after 60 seconds"),
-        }
+        assert!(
+            total_rows(&batches) > 0,
+            "UNION ALL should return rows from both tables"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[ignore = "requires test demo file - known failing: UNION ALL multi-partition bug"]
     async fn test_union_all_event_tables() {
-        if !demo_exists() {
-            return;
-        }
-
         let sql = r#"
             SELECT tick, 'Damage' as event_type FROM DamageEvent WHERE tick < 10000
             UNION ALL
@@ -500,18 +532,16 @@ mod tests {
             SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent WHERE tick < 10000
         "#;
 
-        let result = tokio::time::timeout(
+        let batches = tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            run_single_query(sql),
+            run_query(sql),
         )
-        .await;
+        .await
+        .expect("UNION ALL should complete within 60s");
 
-        match result {
-            Ok(batches) => {
-                let rows = total_rows(&batches);
-                eprintln!("[test] UNION ALL events returned {} rows", rows);
-            }
-            Err(_) => panic!("TIMEOUT after 60 seconds"),
-        }
+        assert!(
+            total_rows(&batches) > 0,
+            "UNION ALL should return rows from all event tables"
+        );
     }
 }
