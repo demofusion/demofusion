@@ -103,6 +103,7 @@ type DispatcherChannelParts = (
 pub type Schemas = HashMap<Arc<str>, EntitySchema>;
 
 const DEFAULT_DEMO_BATCH_SIZE: usize = 1024;
+#[cfg(feature = "gotv")]
 const DEFAULT_LIVE_BATCH_SIZE: usize = 128;
 
 #[async_trait]
