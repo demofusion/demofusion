@@ -2,7 +2,6 @@ pub mod distribution_stream;
 pub mod distributor_channels;
 pub mod filter_pushdown;
 pub mod pipeline_analysis;
-pub mod query_session;
 pub mod stream;
 pub mod streaming_stats;
 pub mod table_providers;
