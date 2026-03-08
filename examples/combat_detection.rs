@@ -120,7 +120,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let tick = ticks.value(i);
             let entity_idx = entity_indices.value(i);
             let delta = delta_types.value(i);
-            let team = if teams.value(i) == 2 { "Amber" } else { "Sapphire" };
+            let team = if teams.value(i) == 2 {
+                "Amber"
+            } else {
+                "Sapphire"
+            };
             let health = health_col.value(i);
             let max_health = max_health_col.value(i);
             let pos_x = cell_to_world(cell_x.value(i));
@@ -141,7 +145,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             in_combat: false,
                         },
                     );
-                    println!("[{:.1}s] Hero spawned: entity {}, {}", game_seconds, entity_idx, team);
+                    println!(
+                        "[{:.1}s] Hero spawned: entity {}, {}",
+                        game_seconds, entity_idx, team
+                    );
                 }
                 "delete" => {
                     if let Some(hero) = heroes.remove(&entity_idx) {
@@ -180,9 +187,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 "[{:.1}s] {} took {} dmg ({:.0}% HP remaining)",
                                 game_seconds, hero.team, damage, pct
                             );
-                        } else if hero.in_combat && tick - hero.last_damage_tick > combat_cooldown_ticks {
+                        } else if hero.in_combat
+                            && tick - hero.last_damage_tick > combat_cooldown_ticks
+                        {
                             hero.in_combat = false;
-                            println!("[{:.1}s] COMBAT END: {} hero disengaged", game_seconds, hero.team);
+                            println!(
+                                "[{:.1}s] COMBAT END: {} hero disengaged",
+                                game_seconds, hero.team
+                            );
                         }
                     }
                 }

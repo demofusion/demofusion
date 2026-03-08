@@ -87,15 +87,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let batch = result?;
         batch_count += 1;
 
-        let entity_indices = batch.column_by_name("entity_index").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let delta_types = batch.column_by_name("delta_type").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
-        let teams = batch.column_by_name("m_iTeamNum").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
-        let cell_x = batch.column_by_name("CBodyComponent__m_cellX").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
+        let entity_indices = batch
+            .column_by_name("entity_index")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let delta_types = batch
+            .column_by_name("delta_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let teams = batch
+            .column_by_name("m_iTeamNum")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let cell_x = batch
+            .column_by_name("CBodyComponent__m_cellX")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
 
         for i in 0..batch.num_rows() {
             let entity_idx = entity_indices.value(i);
             let delta = delta_types.value(i);
-            let team = if teams.value(i) == 2 { "Amber" } else { "Sapphire" };
+            let team = if teams.value(i) == 2 {
+                "Amber"
+            } else {
+                "Sapphire"
+            };
             let pos_x = cell_to_world(cell_x.value(i));
             let lane = get_lane(pos_x);
 
@@ -130,8 +154,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Print summary periodically
         if batch_count % 10 == 0 {
             println!("\n=== Trooper Stats (batch {}) ===", batch_count);
-            println!("Spawns: Amber {}, Sapphire {}", stats.spawns_amber, stats.spawns_sapphire);
-            println!("Deaths: Amber {}, Sapphire {}", stats.deaths_amber, stats.deaths_sapphire);
+            println!(
+                "Spawns: Amber {}, Sapphire {}",
+                stats.spawns_amber, stats.spawns_sapphire
+            );
+            println!(
+                "Deaths: Amber {}, Sapphire {}",
+                stats.deaths_amber, stats.deaths_sapphire
+            );
             println!("Deaths by lane:");
             for lane_name in ["Yellow", "Blue", "Green"] {
                 let (amber, sapphire) = stats.deaths_by_lane.get(lane_name).unwrap_or(&(0, 0));
@@ -142,8 +172,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("\n=== Final Trooper Stats ===");
-    println!("Spawns: Amber {}, Sapphire {}", stats.spawns_amber, stats.spawns_sapphire);
-    println!("Deaths: Amber {}, Sapphire {}", stats.deaths_amber, stats.deaths_sapphire);
+    println!(
+        "Spawns: Amber {}, Sapphire {}",
+        stats.spawns_amber, stats.spawns_sapphire
+    );
+    println!(
+        "Deaths: Amber {}, Sapphire {}",
+        stats.deaths_amber, stats.deaths_sapphire
+    );
 
     Ok(())
 }

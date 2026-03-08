@@ -55,17 +55,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(result) = query.next().await {
         let batch = result?;
 
-        let ticks = batch.column(0).as_any().downcast_ref::<Int32Array>().unwrap();
-        let entity_indices = batch.column(1).as_any().downcast_ref::<Int32Array>().unwrap();
-        let teams = batch.column(3).as_any().downcast_ref::<UInt64Array>().unwrap();
-        let health = batch.column(4).as_any().downcast_ref::<Int64Array>().unwrap();
-        let cell_x = batch.column(6).as_any().downcast_ref::<UInt64Array>().unwrap();
-        let cell_y = batch.column(7).as_any().downcast_ref::<UInt64Array>().unwrap();
+        let ticks = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let entity_indices = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let teams = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let health = batch
+            .column(4)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        let cell_x = batch
+            .column(6)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        let cell_y = batch
+            .column(7)
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
 
         for i in 0..batch.num_rows() {
             let tick = ticks.value(i);
             let entity_idx = entity_indices.value(i);
-            let team = if teams.value(i) == 2 { "Amber" } else { "Sapphire" };
+            let team = if teams.value(i) == 2 {
+                "Amber"
+            } else {
+                "Sapphire"
+            };
             let hp = health.value(i);
             let pos_x = cell_to_world(cell_x.value(i));
             let pos_y = cell_to_world(cell_y.value(i));

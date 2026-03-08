@@ -55,10 +55,30 @@ async fn process_heroes(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
             }
         };
 
-        let ticks = batch.column_by_name("tick").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let entity_indices = batch.column_by_name("entity_index").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let delta_types = batch.column_by_name("delta_type").unwrap().as_any().downcast_ref::<StringArray>().unwrap();
-        let teams = batch.column_by_name("m_iTeamNum").unwrap().as_any().downcast_ref::<UInt64Array>().unwrap();
+        let ticks = batch
+            .column_by_name("tick")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let entity_indices = batch
+            .column_by_name("entity_index")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let delta_types = batch
+            .column_by_name("delta_type")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        let teams = batch
+            .column_by_name("m_iTeamNum")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
 
         let mut state = state.lock().await;
 
@@ -66,7 +86,11 @@ async fn process_heroes(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
             let tick = ticks.value(i);
             let entity_idx = entity_indices.value(i);
             let delta = delta_types.value(i);
-            let team: &'static str = if teams.value(i) == 2 { "Amber" } else { "Sapphire" };
+            let team: &'static str = if teams.value(i) == 2 {
+                "Amber"
+            } else {
+                "Sapphire"
+            };
 
             state.last_tick = state.last_tick.max(tick);
 
@@ -97,8 +121,18 @@ async fn process_damage(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
             }
         };
 
-        let ticks = batch.column_by_name("tick").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
-        let damages = batch.column_by_name("damage").unwrap().as_any().downcast_ref::<Int32Array>().unwrap();
+        let ticks = batch
+            .column_by_name("tick")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        let damages = batch
+            .column_by_name("damage")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
 
         let mut state = state.lock().await;
 
@@ -107,7 +141,7 @@ async fn process_damage(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
             let damage = damages.value(i);
 
             state.last_tick = state.last_tick.max(tick);
-            
+
             // Track total damage (we don't know attacker team from DamageEvent alone,
             // but this shows the pattern)
             *state.total_damage.entry("total").or_insert(0) += damage as i64;
@@ -117,22 +151,25 @@ async fn process_damage(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
 
 async fn print_summary(state: Arc<Mutex<GameState>>) {
     let mut last_summary_tick = 0;
-    
+
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        
+
         let state = state.lock().await;
         if state.last_tick > 0 && state.last_tick - last_summary_tick >= 1920 {
             last_summary_tick = state.last_tick;
             let game_time = state.last_tick as f64 / 64.0;
-            
+
             println!("\n=== Summary @ {:.0}s ===", game_time);
             println!(
                 "Hero deaths: Amber {}, Sapphire {}",
                 state.hero_deaths.get("Amber").unwrap_or(&0),
                 state.hero_deaths.get("Sapphire").unwrap_or(&0)
             );
-            println!("Total damage dealt: {}", state.total_damage.get("total").unwrap_or(&0));
+            println!(
+                "Total damage dealt: {}",
+                state.total_damage.get("total").unwrap_or(&0)
+            );
             println!("Heroes alive: {}", state.heroes_alive.len());
         }
     }
@@ -173,7 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // parser feeds all streams from a single source
     let hero_state = state.clone();
     let damage_state = state.clone();
-    
+
     tokio::select! {
         _ = async {
             tokio::join!(
@@ -192,7 +229,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         final_state.hero_deaths.get("Amber").unwrap_or(&0),
         final_state.hero_deaths.get("Sapphire").unwrap_or(&0)
     );
-    println!("Total damage dealt: {}", final_state.total_damage.get("total").unwrap_or(&0));
+    println!(
+        "Total damage dealt: {}",
+        final_state.total_damage.get("total").unwrap_or(&0)
+    );
 
     Ok(())
 }
