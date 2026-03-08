@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
+use tracing::trace;
 
 use crate::batch::EntityBatchBuilder;
 use crate::datafusion::distributor_channels::DistributionSender;
@@ -104,13 +105,17 @@ impl BatchingEntityDispatcher {
                         .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
 
-                    // Record batch stats before sending
+                    let rows = batch.num_rows();
+                    let gate_blocked = swb.sender.is_gate_blocked();
+
                     if let Some(stats) = &self.stats {
-                        stats.record_batch_sent(batch.num_rows() as u64);
-                        if swb.sender.is_gate_blocked() {
+                        stats.record_batch_sent(rows as u64);
+                        if gate_blocked {
                             stats.record_gate_blocked();
                         }
                     }
+
+                    trace!(target: "demofusion::dispatcher", rows, gate_blocked, "sending entity batch");
 
                     if swb.sender.send(batch).await.is_err() {
                         // Receiver dropped - mark for removal
@@ -134,8 +139,8 @@ impl BatchingEntityDispatcher {
     }
 
     pub async fn flush_all(&mut self) -> Result<(), ArrowVisitorError> {
+        trace!(target: "demofusion::dispatcher", "flushing all entity batches");
         for sender_list in self.senders.values_mut() {
-            // Track which senders failed (receiver dropped) so we can remove them
             let mut failed_indices = Vec::new();
 
             for (idx, swb) in sender_list.iter_mut().enumerate() {
@@ -145,19 +150,19 @@ impl BatchingEntityDispatcher {
                         .flush()
                         .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
 
-                    // Record final batch stats
+                    let rows = batch.num_rows();
                     if let Some(stats) = &self.stats {
-                        stats.record_batch_sent(batch.num_rows() as u64);
+                        stats.record_batch_sent(rows as u64);
                     }
 
+                    trace!(target: "demofusion::dispatcher", rows, "sending final entity batch");
+
                     if swb.sender.send(batch).await.is_err() {
-                        // Receiver dropped - mark for removal
                         failed_indices.push(idx);
                     }
                 }
             }
 
-            // Remove failed senders in reverse order to preserve indices
             for idx in failed_indices.into_iter().rev() {
                 sender_list.swap_remove(idx);
             }

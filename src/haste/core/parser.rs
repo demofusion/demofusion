@@ -2,6 +2,7 @@ use anyhow::bail;
 use core::future::Future;
 use prost::Message;
 use std::io::{self, SeekFrom};
+use tracing::trace;
 use valveprotos::common::{
     CDemoFullPacket, CDemoPacket, CDemoStringTables, CsvcMsgCreateStringTable,
     CsvcMsgPacketEntities, CsvcMsgServerInfo, CsvcMsgUpdateStringTable, EDemoCommands, SvcMessages,
@@ -188,10 +189,8 @@ impl<D: DemoStream, V: Visitor> StreamingParser<D, V> {
                     self.ctx.tick = cmd_header.tick;
                     self.handle_cmd(&cmd_header).await?;
                     if self.ctx.prev_tick != self.ctx.tick {
+                        trace!(target: "demofusion::parser", tick = self.ctx.tick, "awaiting on_tick_end");
                         self.visitor.on_tick_end(&self.ctx).await?;
-                        // Yield to Tokio runtime after each tick to allow concurrent tasks
-                        // (like DataFusion query execution) to make progress. Without this,
-                        // unbounded channel sends never yield and the parser starves other tasks.
                         tokio::task::yield_now().await;
                     }
                 }
@@ -402,9 +401,6 @@ impl<D: DemoStream, V: Visitor> StreamingParser<D, V> {
         &mut self,
         msg: CsvcMsgPacketEntities,
     ) -> anyhow::Result<()> {
-        // SAFETY: safety here can only be guaranteed by the fact that entity
-        // classes and flattened serializers become available before packet
-        // entities.
         let Some(entity_classes) = self.ctx.entity_classes.as_ref() else {
             bail!("entity classes are not available");
         };
@@ -412,6 +408,9 @@ impl<D: DemoStream, V: Visitor> StreamingParser<D, V> {
             bail!("serializers are not available");
         };
         let instance_baseline = &self.ctx.instance_baseline;
+
+        let updated_entries = msg.updated_entries();
+        trace!(target: "demofusion::parser", tick = self.ctx.tick, updated_entries, "processing entity updates");
 
         let entity_data = msg.entity_data();
         let mut br = BitReader::new(entity_data);
@@ -743,6 +742,7 @@ impl<D: AsyncDemoStream, V: Visitor> AsyncStreamingParser<D, V> {
 
     async fn run_internal(&mut self, reset_on_full_packet: bool) -> anyhow::Result<()> {
         loop {
+            trace!(target: "demofusion::parser", tick = self.ctx.tick, "awaiting next command");
             match self.demo_stream.read_cmd_header().await {
                 Ok(cmd_header) => {
                     self.ctx.prev_tick = self.ctx.tick;
@@ -754,10 +754,8 @@ impl<D: AsyncDemoStream, V: Visitor> AsyncStreamingParser<D, V> {
 
                     self.handle_cmd(&cmd_header).await?;
                     if self.ctx.prev_tick != self.ctx.tick {
+                        trace!(target: "demofusion::parser", tick = self.ctx.tick, "awaiting on_tick_end");
                         self.visitor.on_tick_end(&self.ctx).await?;
-                        // Yield to Tokio runtime after each tick to allow concurrent tasks
-                        // (like DataFusion query execution) to make progress. Without this,
-                        // the parser can starve other tasks, especially in single-threaded runtimes.
                         tokio::task::yield_now().await;
                     }
                 }
@@ -955,6 +953,9 @@ impl<D: AsyncDemoStream, V: Visitor> AsyncStreamingParser<D, V> {
             bail!("serializers are not available");
         };
         let instance_baseline = &self.ctx.instance_baseline;
+
+        let updated_entries = msg.updated_entries();
+        trace!(target: "demofusion::parser", tick = self.ctx.tick, updated_entries, "processing entity updates");
 
         let entity_data = msg.entity_data();
         let mut br = BitReader::new(entity_data);
