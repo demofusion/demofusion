@@ -12,6 +12,9 @@ pub mod visitor;
 #[cfg(feature = "gotv")]
 pub mod gotv;
 
+#[cfg(feature = "python")]
+pub mod python;
+
 pub use session::{
     IntoStreamingSession, QueryHandle, Schemas, SessionError, SessionResult, StreamingSession,
 };

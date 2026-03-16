@@ -6,10 +6,11 @@ license = "Apache-2.0"
 description = "SQL queries over Valve Source 2 demo files via Apache DataFusion"
 
 [lib]
-crate-type = ["rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["python"]
+python = ["pyo3/extension-module", "pyo3-async-runtimes", "dep:arrow", "dep:pyo3-log", "tracing/log"]
 gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project"]
 
 [dependencies]
@@ -30,6 +31,16 @@ datafusion = { version = "52", default-features = false, features = [
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 async-trait = "0.1"
+
+# PyO3 for Python bindings (optional)
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3-async-runtimes = { version = "0.22", features = ["tokio-runtime"], optional = true }
+
+# Arrow FFI for PyArrow conversion (optional, used by python bindings)
+arrow = { version = "57", default-features = false, features = ["ffi"], optional = true }
+
+# Bridge Rust log records to Python logging (optional, used by python bindings)
+pyo3-log = { version = "0.11", optional = true }
 
 # Utilities
 async-channel = "2.5"
