@@ -10,7 +10,15 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["python"]
-python = ["pyo3/extension-module", "pyo3-async-runtimes", "dep:arrow", "dep:pyo3-log", "tracing/log"]
+python = [
+    "dep:pyo3",
+    "pyo3/extension-module",
+    "pyo3/abi3-py311",
+    "pyo3-async-runtimes",
+    "dep:arrow",
+    "dep:pyo3-log",
+    "tracing/log",
+]
 gotv = ["dep:reqwest", "dep:serde", "dep:serde_json", "dep:tokio-util", "dep:pin-project"]
 
 [dependencies]
@@ -33,7 +41,7 @@ futures = "0.3"
 async-trait = "0.1"
 
 # PyO3 for Python bindings (optional)
-pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+pyo3 = { version = "0.22", features = ["abi3-py311"], optional = true }
 pyo3-async-runtimes = { version = "0.22", features = ["tokio-runtime"], optional = true }
 
 # Arrow FFI for PyArrow conversion (optional, used by python bindings)
