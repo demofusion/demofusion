@@ -2,7 +2,9 @@
 
 #[cfg(feature = "gotv")]
 pub mod gotv_impl {
-    use super::super::exceptions::session_error_to_pyexc;
+    use std::sync::Arc;
+
+    use super::super::exceptions::{DemofusionError, DemofusionSessionError, session_error_to_pyexc};
     use super::super::session::PyStreamingSession;
     use crate::gotv::GotvSource;
     use crate::session::IntoStreamingSession;
@@ -11,7 +13,7 @@ pub mod gotv_impl {
 
     #[pyclass(name = "GotvSource")]
     pub struct PyGotvSource {
-        inner: GotvSource,
+        inner: Arc<parking_lot::Mutex<Option<GotvSource>>>,
     }
 
     #[pymethods]
@@ -21,23 +23,30 @@ pub mod gotv_impl {
         fn connect(url: String, py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
             future_into_py(py, async move {
                 match GotvSource::connect(&url).await {
-                    Ok(source) => Ok(PyGotvSource { inner: source }),
-                    Err(e) => Err(session_error_to_pyexc(&e)),
+                    Ok(source) => Ok(PyGotvSource {
+                        inner: Arc::new(parking_lot::Mutex::new(Some(source))),
+                    }),
+                    Err(e) => Err(DemofusionError::new_err(e.to_string())),
                 }
             })
         }
 
         /// Initialize session and discover schemas (async).
         #[pyo3(signature = (*, batch_size=None, reject_pipeline_breakers=None))]
-        fn into_session(
+        fn into_session<'py>(
             &self,
-            py: Python<'_>,
+            py: Python<'py>,
             batch_size: Option<usize>,
             reject_pipeline_breakers: Option<bool>,
-        ) -> PyResult<Bound<'_, PyAny>> {
-            let inner = self.inner.clone();
+        ) -> PyResult<Bound<'py, PyAny>> {
+            let inner = Arc::clone(&self.inner);
             future_into_py(py, async move {
-                match inner.into_session().await {
+                let source = inner.lock().take().ok_or_else(|| {
+                    DemofusionSessionError::new_err(
+                        "GotvSource already consumed by into_session()",
+                    )
+                })?;
+                match source.into_session().await {
                     Ok(session) => Ok(PyStreamingSession::from_session(
                         session,
                         batch_size,
