@@ -277,7 +277,8 @@ class TestFromBytesE2E:
 
         async with await DemoSource.from_bytes(data) as demo:
             tables = demo.get_tables()
-            assert len(tables) == 862
+            entity_tables = [t for t in tables if not t.endswith("Event")]
+            assert len(entity_tables) == 862
             assert "CCitadelPlayerPawn" in tables
 
             h = await demo.add_query(
@@ -350,9 +351,13 @@ class TestSchemaInspectionE2E:
 
     @pytest.mark.asyncio
     async def test_table_count(self, demo_path):
-        """Demo should have 862 entity tables."""
+        """Demo should have 862 entity tables + 60+ event tables."""
         demo = await DemoSource.open(demo_path)
-        assert len(demo.get_tables()) == 862
+        tables = demo.get_tables()
+        entity_tables = [t for t in tables if not t.endswith("Event")]
+        event_tables = [t for t in tables if t.endswith("Event")]
+        assert len(entity_tables) == 862
+        assert len(event_tables) >= 50, f"Expected 50+ event tables, got {len(event_tables)}"
 
     @pytest.mark.asyncio
     async def test_player_pawn_schema_fields(self, demo_path):
@@ -386,12 +391,13 @@ class TestSchemaInspectionE2E:
 
     @pytest.mark.asyncio
     async def test_all_schemas_have_tick_and_entity_index(self, demo_path):
-        """Every entity table schema should have tick and entity_index."""
+        """Every table schema should have tick; entity tables should also have entity_index."""
         demo = await DemoSource.open(demo_path)
         for table_name in demo.get_tables():
             schema = demo.get_schema(table_name)
             assert "tick" in schema.names, f"{table_name} missing tick"
-            assert "entity_index" in schema.names, f"{table_name} missing entity_index"
+            if not table_name.endswith("Event"):
+                assert "entity_index" in schema.names, f"{table_name} missing entity_index"
 
 
 # ── Concurrent Multi-Query Tests ─────────────────────────────────────
