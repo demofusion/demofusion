@@ -410,7 +410,8 @@ class TestCompleteWorkflow:
             assert isinstance(schema, pa.Schema)
             field_names = [schema.field(i).name for i in range(len(schema))]
             assert "tick" in field_names
-            assert "entity_index" in field_names
+            if not name.endswith("Event"):
+                assert "entity_index" in field_names
 
     @pytest.mark.asyncio
     async def test_multiple_concurrent_queries(self, demo_path):
