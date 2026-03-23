@@ -119,6 +119,102 @@ class TestDemoSourceSchemas:
         assert demo.get_schema("NonExistentTable12345") is None
 
 
+class TestEventSchemaDiscovery:
+    """Test that event tables appear in schema discovery alongside entities."""
+
+    # Well-known event table names from the generated code
+    KNOWN_EVENT_TABLES = [
+        "DamageEvent",
+        "HeroKilledEvent",
+        "BulletHitEvent",
+        "CurrencyChangedEvent",
+        "GameOverEvent",
+    ]
+
+    # Well-known entity table names
+    KNOWN_ENTITY_TABLES = [
+        "CCitadelPlayerPawn",
+        "CCitadelPlayerController",
+    ]
+
+    @pytest.mark.asyncio
+    async def test_get_tables_includes_event_tables(self, demo_path):
+        """get_tables() should include event table names like DamageEvent."""
+        demo = await DemoSource.open(demo_path)
+        tables = demo.get_tables()
+        for event_table in self.KNOWN_EVENT_TABLES:
+            assert event_table in tables, f"Event table '{event_table}' not found in get_tables()"
+
+    @pytest.mark.asyncio
+    async def test_get_tables_includes_entity_tables(self, demo_path):
+        """get_tables() should still include entity table names."""
+        demo = await DemoSource.open(demo_path)
+        tables = demo.get_tables()
+        for entity_table in self.KNOWN_ENTITY_TABLES:
+            assert entity_table in tables, f"Entity table '{entity_table}' not found in get_tables()"
+
+    @pytest.mark.asyncio
+    async def test_schemas_includes_event_tables(self, demo_path):
+        """schemas property should include event table schemas."""
+        demo = await DemoSource.open(demo_path)
+        schemas = demo.schemas
+        for event_table in self.KNOWN_EVENT_TABLES:
+            assert event_table in schemas, f"Event table '{event_table}' not found in schemas"
+            assert isinstance(schemas[event_table], pa.Schema)
+
+    @pytest.mark.asyncio
+    async def test_get_schema_returns_event_schema(self, demo_path):
+        """get_schema() should return a schema for event tables."""
+        demo = await DemoSource.open(demo_path)
+        schema = demo.get_schema("DamageEvent")
+        assert schema is not None
+        assert isinstance(schema, pa.Schema)
+
+    @pytest.mark.asyncio
+    async def test_event_schema_has_tick_column(self, demo_path):
+        """Event schemas should have a 'tick' column."""
+        demo = await DemoSource.open(demo_path)
+        schema = demo.get_schema("DamageEvent")
+        assert schema is not None
+        field_names = [schema.field(i).name for i in range(len(schema))]
+        assert "tick" in field_names, "Event schema should contain a 'tick' column"
+
+    @pytest.mark.asyncio
+    async def test_event_schema_has_no_entity_index(self, demo_path):
+        """Event schemas should NOT have 'entity_index' (only entities have that)."""
+        demo = await DemoSource.open(demo_path)
+        schema = demo.get_schema("DamageEvent")
+        assert schema is not None
+        field_names = [schema.field(i).name for i in range(len(schema))]
+        assert "entity_index" not in field_names
+
+    @pytest.mark.asyncio
+    async def test_event_tables_end_with_event_suffix(self, demo_path):
+        """All event tables in get_tables() should end with 'Event'."""
+        demo = await DemoSource.open(demo_path)
+        tables = demo.get_tables()
+        event_tables = [t for t in tables if t.endswith("Event")]
+        assert len(event_tables) > 0, "Should have at least some event tables"
+
+    @pytest.mark.asyncio
+    async def test_raw_session_get_tables_includes_events(self, demo_path):
+        """Raw StreamingSession.get_tables() should also include events."""
+        raw = await RawDemoSource.open(demo_path)
+        session = await raw.into_session()
+        tables = session.get_tables()
+        for event_table in self.KNOWN_EVENT_TABLES:
+            assert event_table in tables, f"Event table '{event_table}' not in raw get_tables()"
+
+    @pytest.mark.asyncio
+    async def test_raw_session_schemas_includes_events(self, demo_path):
+        """Raw StreamingSession.schemas should include event schemas."""
+        raw = await RawDemoSource.open(demo_path)
+        session = await raw.into_session()
+        schemas = session.schemas
+        for event_table in self.KNOWN_EVENT_TABLES:
+            assert event_table in schemas, f"Event table '{event_table}' not in raw schemas"
+
+
 class TestDemoSourceContextManager:
     """Test DemoSource async context manager."""
 
