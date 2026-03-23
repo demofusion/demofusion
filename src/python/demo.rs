@@ -4,10 +4,10 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 
+use super::exceptions::{DemofusionSessionError, session_error_to_pyexc};
+use super::session::PyStreamingSession;
 use crate::demo::DemoSource;
 use crate::session::IntoStreamingSession;
-use super::exceptions::{session_error_to_pyexc, DemofusionSessionError};
-use super::session::PyStreamingSession;
 
 #[pyclass(name = "DemoSource")]
 pub struct PyDemoSource {
@@ -52,18 +52,14 @@ impl PyDemoSource {
         let inner = Arc::clone(&self.inner);
         future_into_py(py, async move {
             let source = inner.lock().take().ok_or_else(|| {
-                DemofusionSessionError::new_err(
-                    "DemoSource already consumed by into_session()",
-                )
+                DemofusionSessionError::new_err("DemoSource already consumed by into_session()")
             })?;
             match source.into_session().await {
-                Ok(session) => {
-                    Ok(PyStreamingSession::from_session(
-                        session,
-                        batch_size,
-                        reject_pipeline_breakers,
-                    ))
-                }
+                Ok(session) => Ok(PyStreamingSession::from_session(
+                    session,
+                    batch_size,
+                    reject_pipeline_breakers,
+                )),
                 Err(e) => Err(session_error_to_pyexc(&e)),
             }
         })

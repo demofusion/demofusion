@@ -6,9 +6,9 @@ use futures::StreamExt;
 use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 
-use crate::session::QueryHandle;
 use super::arrow_convert::{record_batch_to_pyarrow, schema_to_pyarrow};
 use super::exceptions::session_error_to_pyexc;
+use crate::session::QueryHandle;
 
 #[pyclass(name = "QueryHandle")]
 pub struct PyQueryHandle {
@@ -53,9 +53,9 @@ impl PyQueryHandle {
             // Take the handle out to get mutable access for polling
             let mut handle = {
                 let mut guard = inner.lock();
-                guard.take().ok_or_else(|| {
-                    pyo3::exceptions::PyStopAsyncIteration::new_err("")
-                })?
+                guard
+                    .take()
+                    .ok_or_else(|| pyo3::exceptions::PyStopAsyncIteration::new_err(""))?
             };
 
             // Poll for next batch

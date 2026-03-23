@@ -7,7 +7,6 @@ use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
 
 /// Convert a Rust `arrow::datatypes::Schema` to a PyArrow `Schema`.
 ///
@@ -15,8 +14,9 @@ use pyo3::types::PyTuple;
 /// into PyArrow using `pa.Schema._import_from_c(ptr)`.
 pub fn schema_to_pyarrow(py: Python<'_>, schema: &SchemaRef) -> PyResult<PyObject> {
     // Export the schema to FFI
-    let ffi_schema = FFI_ArrowSchema::try_from(schema.as_ref())
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Arrow FFI schema export failed: {e}")))?;
+    let ffi_schema = FFI_ArrowSchema::try_from(schema.as_ref()).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Arrow FFI schema export failed: {e}"))
+    })?;
 
     let schema_ptr = &ffi_schema as *const FFI_ArrowSchema as usize;
 
@@ -37,8 +37,9 @@ pub fn record_batch_to_pyarrow(py: Python<'_>, batch: &RecordBatch) -> PyResult<
     let struct_array: datafusion::arrow::array::StructArray = batch.clone().into();
 
     // Export array data and schema to FFI
-    let (ffi_array, ffi_schema) = arrow::ffi::to_ffi(&struct_array.into())
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(format!("Arrow FFI array export failed: {e}")))?;
+    let (ffi_array, ffi_schema) = arrow::ffi::to_ffi(&struct_array.into()).map_err(|e| {
+        pyo3::exceptions::PyRuntimeError::new_err(format!("Arrow FFI array export failed: {e}"))
+    })?;
 
     let array_ptr = &ffi_array as *const FFI_ArrowArray as usize;
     let schema_ptr = &ffi_schema as *const FFI_ArrowSchema as usize;

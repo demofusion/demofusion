@@ -45,7 +45,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = DemoSource::from_bytes(demo_bytes);
     let mut session = source.into_session().await?;
 
-    println!("Loaded demo, {} entity tables available", session.schemas().count());
+    println!(
+        "Loaded demo, {} entity tables available",
+        session.schemas().count()
+    );
 
     let mut query = session.add_query(QUERY).await?;
     let _handle = session.start()?;

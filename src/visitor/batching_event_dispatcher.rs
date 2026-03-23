@@ -264,7 +264,10 @@ mod tests {
         // (The dispatcher has no pending data, so this is a no-op flush, but it
         // exercises the code path without needing protobuf-encoded event data.)
         let result = dispatcher.flush_all().await;
-        assert!(result.is_ok(), "flush_all should succeed even with a dropped receiver");
+        assert!(
+            result.is_ok(),
+            "flush_all should succeed even with a dropped receiver"
+        );
 
         // The dispatcher should still report active senders (HeroKilled is alive)
         assert!(

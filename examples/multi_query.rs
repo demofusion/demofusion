@@ -189,7 +189,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let source = DemoSource::from_bytes(demo_bytes);
     let mut session = source.into_session().await?;
 
-    println!("Loaded demo, {} entity tables available", session.schemas().count());
+    println!(
+        "Loaded demo, {} entity tables available",
+        session.schemas().count()
+    );
 
     // Create multiple queries
     let hero_query = session.add_query(HERO_QUERY).await?;

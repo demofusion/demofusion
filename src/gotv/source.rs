@@ -45,8 +45,7 @@ impl IntoStreamingSession for GotvSource {
             .map(|s| (Arc::clone(&s.serializer_name), s))
             .collect();
 
-        let session =
-            StreamingSession::from_gotv_internal(self.client, schemas, self.start_packet);
+        let session = StreamingSession::from_gotv_internal(self.client, schemas, self.start_packet);
 
         Ok(session)
     }

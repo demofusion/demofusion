@@ -16,18 +16,12 @@ pub fn session_error_to_pyexc(err: &crate::session::SessionError) -> PyErr {
     use crate::session::SessionError;
 
     match err {
-        SessionError::Io(_) => {
-            DemofusionIOError::new_err(err.to_string())
-        }
-        SessionError::Schema(_) => {
-            DemofusionSchemaError::new_err(err.to_string())
-        }
+        SessionError::Io(_) => DemofusionIOError::new_err(err.to_string()),
+        SessionError::Schema(_) => DemofusionSchemaError::new_err(err.to_string()),
         SessionError::Sql(_) | SessionError::Query(_) | SessionError::UnknownTable(_) => {
             DemofusionDataFusionError::new_err(err.to_string())
         }
-        SessionError::DataFusion(_) => {
-            DemofusionDataFusionError::new_err(err.to_string())
-        }
+        SessionError::DataFusion(_) => DemofusionDataFusionError::new_err(err.to_string()),
         SessionError::Parser(_) | SessionError::PipelineBreaker(_) => {
             DemofusionHasteError::new_err(err.to_string())
         }
