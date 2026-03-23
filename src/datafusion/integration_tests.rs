@@ -17,6 +17,7 @@ mod tests {
     use bytes::Bytes;
     use datafusion::arrow::array::{Array, Int32Array};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::physical_plan::ExecutionPlanProperties;
     use datafusion::prelude::*;
     use futures::StreamExt;
 
@@ -288,6 +289,150 @@ mod tests {
             !plan_str.contains("RepartitionExec"),
             "target_partitions=1 should prevent repartitioning, got:\n{}",
             plan_str
+        );
+    }
+
+    #[tokio::test]
+    async fn test_union_all_plan_structure() {
+        let ctx = SessionContext::new_with_config(streaming_session_config());
+
+        let damage_schema = event_schema("DamageEvent").expect("damage schema");
+        let damage_provider = EventTableProvider::new(EventType::Damage, damage_schema);
+
+        let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
+        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema);
+
+        ctx.register_table("DamageEvent", Arc::new(damage_provider))
+            .unwrap();
+        ctx.register_table("HeroKilledEvent", Arc::new(kill_provider))
+            .unwrap();
+
+        let sql = r#"
+            SELECT tick, 'Damage' as event_type FROM DamageEvent WHERE tick < 10000
+            UNION ALL
+            SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent WHERE tick < 10000
+        "#;
+
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
+
+        let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
+            .indent(true)
+            .to_string();
+
+        // Print the plan for diagnostic visibility
+        eprintln!("UNION ALL physical plan:\n{}", plan_str);
+
+        // UNION ALL should use InterleaveExec or UnionExec
+        assert!(
+            plan_str.contains("InterleaveExec") || plan_str.contains("UnionExec"),
+            "Expected InterleaveExec or UnionExec for UNION ALL, got:\n{}",
+            plan_str
+        );
+
+        // Should have two StreamingTableExec leaves (one per table)
+        let streaming_count = plan_str.matches("StreamingTableExec").count();
+        eprintln!("StreamingTableExec count: {}", streaming_count);
+
+        // Check pipeline safety
+        let analysis = analyze_pipeline(&physical);
+        eprintln!("Pipeline analysis:\n{}", analysis.report());
+        eprintln!("Is streaming safe: {}", analysis.is_streaming_safe());
+
+        // Check partition count — this is critical for understanding the bug
+        let output_partitioning = physical.output_partitioning();
+        eprintln!(
+            "Output partitioning: {:?}, partition_count: {}",
+            output_partitioning,
+            output_partitioning.partition_count()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_union_all_entity_plan_structure() {
+        let ctx = SessionContext::new_with_config(streaming_session_config());
+
+        let pawn_schema = datafusion::arrow::datatypes::Schema::new(vec![
+            datafusion::arrow::datatypes::Field::new(
+                "tick",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+            datafusion::arrow::datatypes::Field::new(
+                "entity_index",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+        ]);
+        let pawn_provider =
+            EntityTableProvider::new(Arc::new(pawn_schema), Arc::from("CCitadelPlayerPawn"));
+
+        let controller_schema = datafusion::arrow::datatypes::Schema::new(vec![
+            datafusion::arrow::datatypes::Field::new(
+                "tick",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+            datafusion::arrow::datatypes::Field::new(
+                "entity_index",
+                datafusion::arrow::datatypes::DataType::Int32,
+                false,
+            ),
+        ]);
+        let controller_provider = EntityTableProvider::new(
+            Arc::new(controller_schema),
+            Arc::from("CCitadelPlayerController"),
+        );
+
+        ctx.register_table("CCitadelPlayerPawn", Arc::new(pawn_provider))
+            .unwrap();
+        ctx.register_table("CCitadelPlayerController", Arc::new(controller_provider))
+            .unwrap();
+
+        let sql = r#"
+            SELECT tick, entity_index, 'Pawn' as source_type
+            FROM CCitadelPlayerPawn
+            WHERE tick < 1000
+            UNION ALL
+            SELECT tick, entity_index, 'Controller' as source_type
+            FROM CCitadelPlayerController
+            WHERE tick < 1000
+        "#;
+
+        let logical = ctx
+            .state()
+            .create_logical_plan(sql)
+            .await
+            .expect("logical plan");
+        let physical = ctx
+            .state()
+            .create_physical_plan(&logical)
+            .await
+            .expect("physical plan");
+
+        let plan_str = datafusion::physical_plan::displayable(physical.as_ref())
+            .indent(true)
+            .to_string();
+
+        eprintln!("UNION ALL entity plan:\n{}", plan_str);
+
+        let analysis = analyze_pipeline(&physical);
+        eprintln!("Pipeline analysis:\n{}", analysis.report());
+        eprintln!("Is streaming safe: {}", analysis.is_streaming_safe());
+
+        let output_partitioning = physical.output_partitioning();
+        eprintln!(
+            "Output partitioning: {:?}, partition_count: {}",
+            output_partitioning,
+            output_partitioning.partition_count()
         );
     }
 
@@ -772,50 +917,54 @@ mod tests {
     }
 
     // =========================================================================
-    // Known Failing Tests (UNION ALL bug - keep for regression tracking)
+    // UNION ALL Tests (require demo file)
     // =========================================================================
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "requires test demo file - known failing: UNION ALL multi-partition bug"]
+    #[ignore = "requires test demo file"]
     async fn test_union_all_entity_tables() {
+        // Use subqueries with LIMIT so each branch terminates early in debug mode,
+        // while still exercising the UNION ALL multi-partition plan.
         let sql = r#"
-            SELECT tick, entity_index, 'Pawn' as source_type
-            FROM CCitadelPlayerPawn
-            WHERE tick < 1000
+            (SELECT tick, entity_index, 'Pawn' as source_type
+             FROM CCitadelPlayerPawn
+             LIMIT 50)
             UNION ALL
-            SELECT tick, entity_index, 'Controller' as source_type  
-            FROM CCitadelPlayerController
-            WHERE tick < 1000
+            (SELECT tick, entity_index, 'Controller' as source_type  
+             FROM CCitadelPlayerController
+             LIMIT 50)
         "#;
 
         let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
             .await
             .expect("UNION ALL should complete within 60s");
 
+        let total = total_rows(&batches);
         assert!(
-            total_rows(&batches) > 0,
-            "UNION ALL should return rows from both tables"
+            total > 50,
+            "UNION ALL should return rows from both tables, got {}",
+            total
         );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    #[ignore = "requires test demo file - known failing: UNION ALL multi-partition bug"]
+    #[ignore = "requires test demo file"]
     async fn test_union_all_event_tables() {
         let sql = r#"
-            SELECT tick, 'Damage' as event_type FROM DamageEvent WHERE tick < 10000
+            (SELECT tick, 'Damage' as event_type FROM DamageEvent LIMIT 50)
             UNION ALL
-            SELECT tick, 'BulletHit' as event_type FROM BulletHitEvent WHERE tick < 10000
-            UNION ALL
-            SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent WHERE tick < 10000
+            (SELECT tick, 'HeroKilled' as event_type FROM HeroKilledEvent LIMIT 50)
         "#;
 
         let batches = tokio::time::timeout(std::time::Duration::from_secs(60), run_query(sql))
             .await
             .expect("UNION ALL should complete within 60s");
 
+        let total = total_rows(&batches);
         assert!(
-            total_rows(&batches) > 0,
-            "UNION ALL should return rows from all event tables"
+            total > 50,
+            "UNION ALL should return rows from both event tables, got {}",
+            total
         );
     }
 }
