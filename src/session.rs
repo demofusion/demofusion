@@ -86,17 +86,10 @@ use crate::datafusion::table_providers::{
 use crate::events::{EventType, event_schema};
 use crate::haste::core::packet_source::PacketSource;
 use crate::schema::EntitySchema;
-use crate::sql::extract_table_names;
 
 type BatchReceiver = DistributionReceiver<RecordBatch>;
 type BatchSender = DistributionSender<RecordBatch>;
 type ParserResult = (JoinHandle<Result<(), SessionError>>, Arc<StreamingStats>);
-type DispatcherChannelParts = (
-    HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
-    HashMap<u32, Vec<(BatchSender, EventType)>>,
-    Vec<(u64, EntitySchema)>,
-    SlotBindings,
-);
 
 pub type Schemas = HashMap<Arc<str>, EntitySchema>;
 
@@ -114,6 +107,46 @@ fn streaming_session_context() -> SessionContext {
         .with_target_partitions(1)
         .with_coalesce_batches(false);
     SessionContext::new_with_config(config)
+}
+
+/// Create and register all entity + event table providers in the given context.
+///
+/// Entity providers come from the discovered schemas (one per entity type).
+/// Event providers come from `EventType::all()` (all 60+ event types registered
+/// upfront so they appear in `get_tables()` and are queryable).
+///
+/// Returns concrete-typed maps for later draining at `start()` time.
+fn register_all_providers(
+    ctx: &SessionContext,
+    schemas: &Schemas,
+) -> (
+    HashMap<Arc<str>, Arc<EntityTableProvider>>,
+    HashMap<Arc<str>, Arc<EventTableProvider>>,
+) {
+    let mut entity_providers = HashMap::with_capacity(schemas.len());
+    for (name, schema) in schemas {
+        let provider = Arc::new(EntityTableProvider::new(
+            schema.arrow_schema.clone(),
+            Arc::clone(name),
+        ));
+        ctx.register_table(&**name, Arc::clone(&provider) as _)
+            .expect("entity table registration should not fail");
+        entity_providers.insert(Arc::clone(name), provider);
+    }
+
+    let all_events = EventType::all();
+    let mut event_providers = HashMap::with_capacity(all_events.len());
+    for &event_type in all_events {
+        let table_name = event_type.table_name();
+        let arrow_schema = event_schema(table_name)
+            .unwrap_or_else(|| panic!("EventType::{:?} has no schema", event_type));
+        let provider = Arc::new(EventTableProvider::new(event_type, arrow_schema));
+        ctx.register_table(table_name, Arc::clone(&provider) as _)
+            .expect("event table registration should not fail");
+        event_providers.insert(Arc::from(table_name), provider);
+    }
+
+    (entity_providers, event_providers)
 }
 
 #[derive(Error, Debug)]
@@ -166,9 +199,6 @@ impl From<datafusion::error::DataFusionError> for SessionError {
 
 struct PendingQuery {
     physical_plan: Arc<dyn ExecutionPlan>,
-    entity_slots: HashMap<Arc<str>, ReceiverSlot>,
-    event_slots: HashMap<EventType, ReceiverSlot>,
-    context: SessionContext,
     result_tx: mpsc::UnboundedSender<Result<RecordBatch, SessionError>>,
 }
 
@@ -227,170 +257,12 @@ enum PacketSourceKind {
     },
 }
 
-struct CollectedSlots {
-    entity_slots: HashMap<Arc<str>, Vec<ReceiverSlot>>,
-    event_slots: HashMap<EventType, Vec<ReceiverSlot>>,
-    plans: Vec<Arc<dyn ExecutionPlan>>,
-    contexts: Vec<SessionContext>,
-    result_senders: Vec<mpsc::UnboundedSender<Result<RecordBatch, SessionError>>>,
-}
-
-impl CollectedSlots {
-    fn from_pending_queries(queries: Vec<PendingQuery>) -> Self {
-        let mut entity_slots: HashMap<Arc<str>, Vec<ReceiverSlot>> = HashMap::new();
-        let mut event_slots: HashMap<EventType, Vec<ReceiverSlot>> = HashMap::new();
-        let mut plans = Vec::new();
-        let mut contexts = Vec::new();
-        let mut result_senders = Vec::new();
-
-        for pending in queries {
-            for (entity_type, slot) in pending.entity_slots {
-                entity_slots.entry(entity_type).or_default().push(slot);
-            }
-            for (event_type, slot) in pending.event_slots {
-                event_slots.entry(event_type).or_default().push(slot);
-            }
-            plans.push(pending.physical_plan);
-            contexts.push(pending.context);
-            result_senders.push(pending.result_tx);
-        }
-
-        Self {
-            entity_slots,
-            event_slots,
-            plans,
-            contexts,
-            result_senders,
-        }
-    }
-
-    fn total_channel_count(&self) -> usize {
-        let entity_count: usize = self.entity_slots.values().map(|v| v.len()).sum();
-        let event_count: usize = self.event_slots.values().map(|v| v.len()).sum();
-        entity_count + event_count
-    }
-}
-
-struct DispatcherChannels {
-    entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
-    event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>>,
-    parser_schemas: Vec<(u64, EntitySchema)>,
-    slot_bindings: SlotBindings,
-}
-
-struct SlotBindings {
-    entity_slot_indices: Vec<(ReceiverSlot, usize)>,
-    event_slot_indices: Vec<(ReceiverSlot, usize)>,
-    receivers: Vec<BatchReceiver>,
-}
-
-impl SlotBindings {
-    fn bind(self) -> Result<(), SessionError> {
-        let mut receivers_by_idx: HashMap<usize, BatchReceiver> =
-            self.receivers.into_iter().enumerate().collect();
-
-        for (slot, idx) in self.entity_slot_indices {
-            let rx = receivers_by_idx
-                .remove(&idx)
-                .expect("receiver index mismatch");
-            slot.inject(rx).map_err(|_| {
-                SessionError::Internal("Entity slot already set".to_string())
-            })?;
-        }
-
-        for (slot, idx) in self.event_slot_indices {
-            let rx = receivers_by_idx
-                .remove(&idx)
-                .expect("receiver index mismatch");
-            slot.inject(rx).map_err(|_| {
-                SessionError::Internal("Event slot already set".to_string())
-            })?;
-        }
-
-        Ok(())
-    }
-}
-
-impl DispatcherChannels {
-    fn setup(collected: &CollectedSlots, all_schemas: &Schemas) -> Self {
-        let total_channels = collected.total_channel_count();
-        let (all_senders, all_receivers) =
-            distributor_channels::channels::<RecordBatch>(total_channels);
-
-        let mut sender_iter = all_senders.into_iter();
-        let mut receiver_idx = 0;
-
-        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> =
-            HashMap::new();
-        let mut entity_slot_indices: Vec<(ReceiverSlot, usize)> = Vec::new();
-
-        for (entity_type, slots) in &collected.entity_slots {
-            let schema = &all_schemas[entity_type.as_ref()];
-            for slot in slots {
-                let sender = sender_iter.next().expect("channel count mismatch");
-                entity_dispatcher_senders
-                    .entry(schema.serializer_hash)
-                    .or_default()
-                    .push((sender, schema.clone()));
-                entity_slot_indices.push((slot.clone(), receiver_idx));
-                receiver_idx += 1;
-            }
-        }
-
-        let mut event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>> =
-            HashMap::new();
-        let mut event_slot_indices: Vec<(ReceiverSlot, usize)> = Vec::new();
-
-        for (event_type, slots) in &collected.event_slots {
-            for slot in slots {
-                let sender = sender_iter.next().expect("channel count mismatch");
-                event_dispatcher_senders
-                    .entry(event_type.message_id())
-                    .or_default()
-                    .push((sender, *event_type));
-                event_slot_indices.push((slot.clone(), receiver_idx));
-                receiver_idx += 1;
-            }
-        }
-
-        let parser_schemas: Vec<(u64, EntitySchema)> = all_schemas
-            .iter()
-            .filter(|(name, _)| collected.entity_slots.contains_key(name.as_ref()))
-            .map(|(_, schema)| (schema.serializer_hash, schema.clone()))
-            .collect();
-
-        Self {
-            entity_dispatcher_senders,
-            event_dispatcher_senders,
-            parser_schemas,
-            slot_bindings: SlotBindings {
-                entity_slot_indices,
-                event_slot_indices,
-                receivers: all_receivers,
-            },
-        }
-    }
-
-    fn into_parts(self) -> DispatcherChannelParts {
-        (
-            self.entity_dispatcher_senders,
-            self.event_dispatcher_senders,
-            self.parser_schemas,
-            self.slot_bindings,
-        )
-    }
-}
-
 fn execute_query_plans(
     plans: Vec<Arc<dyn ExecutionPlan>>,
-    contexts: Vec<SessionContext>,
+    ctx: &SessionContext,
     result_senders: Vec<mpsc::UnboundedSender<Result<RecordBatch, SessionError>>>,
 ) -> Result<(), SessionError> {
-    for ((plan, ctx), result_tx) in plans
-        .into_iter()
-        .zip(contexts.into_iter())
-        .zip(result_senders.into_iter())
-    {
+    for (plan, result_tx) in plans.into_iter().zip(result_senders.into_iter()) {
         let stream = execute_stream(plan, ctx.task_ctx())
             .map_err(|e| SessionError::DataFusion(e.to_string()))?;
 
@@ -401,7 +273,10 @@ fn execute_query_plans(
 
 pub struct StreamingSession {
     source: Option<PacketSourceKind>,
-    schemas: HashMap<Arc<str>, EntitySchema>,
+    ctx: SessionContext,
+    entity_providers: HashMap<Arc<str>, Arc<EntityTableProvider>>,
+    event_providers: HashMap<Arc<str>, Arc<EventTableProvider>>,
+    entity_schemas: HashMap<Arc<str>, EntitySchema>,
     pending_queries: Vec<PendingQuery>,
     batch_size: usize,
     #[cfg(feature = "gotv")]
@@ -412,9 +287,15 @@ pub struct StreamingSession {
 
 impl StreamingSession {
     pub(crate) fn from_demo_bytes_internal(demo_bytes: Bytes, schemas: Schemas) -> Self {
+        let ctx = streaming_session_context();
+        let (entity_providers, event_providers) = register_all_providers(&ctx, &schemas);
+
         Self {
             source: Some(PacketSourceKind::DemoBytes(demo_bytes)),
-            schemas,
+            ctx,
+            entity_providers,
+            event_providers,
+            entity_schemas: schemas,
             pending_queries: Vec::new(),
             batch_size: DEFAULT_DEMO_BATCH_SIZE,
             #[cfg(feature = "gotv")]
@@ -430,12 +311,18 @@ impl StreamingSession {
         schemas: Schemas,
         start_packet: Bytes,
     ) -> Self {
+        let ctx = streaming_session_context();
+        let (entity_providers, event_providers) = register_all_providers(&ctx, &schemas);
+
         Self {
             source: Some(PacketSourceKind::GotvClient {
                 client: Box::new(client),
                 start_packet,
             }),
-            schemas,
+            ctx,
+            entity_providers,
+            event_providers,
+            entity_schemas: schemas,
             pending_queries: Vec::new(),
             batch_size: DEFAULT_LIVE_BATCH_SIZE,
             cancel_token: None,
@@ -461,15 +348,15 @@ impl StreamingSession {
     }
 
     pub fn schemas(&self) -> impl Iterator<Item = &EntitySchema> {
-        self.schemas.values()
+        self.entity_schemas.values()
     }
 
     pub fn schema(&self, name: &str) -> Option<&EntitySchema> {
-        self.schemas.get(name)
+        self.entity_schemas.get(name)
     }
 
     pub fn entity_names(&self) -> Vec<&str> {
-        self.schemas.keys().map(|s| &**s).collect()
+        self.entity_schemas.keys().map(|s| &**s).collect()
     }
 
     pub async fn add_query(&mut self, sql: &str) -> Result<QueryHandle, SessionError> {
@@ -477,80 +364,11 @@ impl StreamingSession {
             return Err(SessionError::AlreadyStarted);
         }
 
-        let table_names = extract_table_names(sql).map_err(|e| SessionError::Sql(e.to_string()))?;
-
-        let entity_types: Vec<Arc<str>> = table_names
-            .iter()
-            .filter(|name| self.schemas.contains_key(name.as_str()))
-            .map(|s| Arc::<str>::from(s.as_str()))
-            .collect();
-
-        let event_types: Vec<EventType> = table_names
-            .iter()
-            .filter_map(|name| {
-                EventType::all()
-                    .iter()
-                    .find(|e| e.table_name() == name)
-                    .copied()
-            })
-            .collect();
-
-        let unknown_tables: Vec<&String> = table_names
-            .iter()
-            .filter(|name| {
-                !self.schemas.contains_key(name.as_str())
-                    && !EventType::all().iter().any(|e| e.table_name() == *name)
-            })
-            .collect();
-
-        if !unknown_tables.is_empty() {
-            return Err(SessionError::UnknownTable(
-                unknown_tables
-                    .into_iter()
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ));
-        }
-
-        if entity_types.is_empty() && event_types.is_empty() {
-            return Err(SessionError::Sql(
-                "Query must reference at least one entity or event table".to_string(),
-            ));
-        }
-
-        let ctx = streaming_session_context();
-
-        let mut entity_slots: HashMap<Arc<str>, ReceiverSlot> = HashMap::new();
-        for entity_type in &entity_types {
-            let schema = &self.schemas[entity_type];
-            let slot = ReceiverSlot::new();
-            entity_slots.insert(Arc::clone(entity_type), slot.clone());
-
-            let provider = EntityTableProvider::new(
-                schema.arrow_schema.clone(),
-                Arc::clone(entity_type),
-                slot,
-            );
-            ctx.register_table(&**entity_type, Arc::new(provider))?;
-        }
-
-        let mut event_slots: HashMap<EventType, ReceiverSlot> = HashMap::new();
-        for event_type in &event_types {
-            let schema = event_schema(event_type.table_name()).ok_or_else(|| {
-                SessionError::Schema(format!(
-                    "No schema found for event type: {}",
-                    event_type.table_name()
-                ))
-            })?;
-            let slot = ReceiverSlot::new();
-            event_slots.insert(*event_type, slot.clone());
-
-            let provider = EventTableProvider::new(*event_type, schema, slot);
-            ctx.register_table(event_type.table_name(), Arc::new(provider))?;
-        }
-
-        let logical_plan = ctx
+        // Use the shared SessionContext — all entity and event tables are
+        // already registered. DataFusion will call scan() on referenced
+        // providers, which creates ReceiverSlots automatically.
+        let logical_plan = self
+            .ctx
             .state()
             .create_logical_plan(sql)
             .await
@@ -558,7 +376,8 @@ impl StreamingSession {
 
         let output_schema: SchemaRef = Arc::new(logical_plan.schema().as_arrow().clone());
 
-        let physical_plan = ctx
+        let physical_plan = self
+            .ctx
             .state()
             .create_physical_plan(&logical_plan)
             .await
@@ -581,9 +400,6 @@ impl StreamingSession {
 
         self.pending_queries.push(PendingQuery {
             physical_plan,
-            entity_slots,
-            event_slots,
-            context: ctx,
             result_tx,
         });
 
@@ -593,7 +409,7 @@ impl StreamingSession {
         })
     }
 
-    pub fn start(mut self) -> Result<SessionResult, SessionError> {
+    pub fn start(&mut self) -> Result<SessionResult, SessionError> {
         if self.pending_queries.is_empty() {
             return Err(SessionError::NoQueries);
         }
@@ -613,11 +429,98 @@ impl StreamingSession {
     fn start_internal(&mut self) -> Result<ParserResult, SessionError> {
         let stats = StreamingStats::new();
 
-        let collected =
-            CollectedSlots::from_pending_queries(self.pending_queries.drain(..).collect());
+        // Separate plans and result senders from pending queries
+        let pending: Vec<PendingQuery> = self.pending_queries.drain(..).collect();
+        let mut plans = Vec::with_capacity(pending.len());
+        let mut result_senders = Vec::with_capacity(pending.len());
+        for pq in pending {
+            plans.push(pq.physical_plan);
+            result_senders.push(pq.result_tx);
+        }
 
-        let channels = DispatcherChannels::setup(&collected, &self.schemas);
-        let (entity_senders, event_senders, parser_schemas, slot_bindings) = channels.into_parts();
+        // Drain pending slots from providers to discover which tables were
+        // referenced by queries. scan() was called during add_query() planning,
+        // which pushed ReceiverSlots into each provider's pending_slots.
+        let mut entity_slots: HashMap<Arc<str>, Vec<ReceiverSlot>> = HashMap::new();
+        for (name, provider) in &self.entity_providers {
+            let slots = provider.drain_pending_slots();
+            if !slots.is_empty() {
+                entity_slots.insert(Arc::clone(name), slots);
+            }
+        }
+
+        let mut event_slots: HashMap<EventType, Vec<ReceiverSlot>> = HashMap::new();
+        for (_name, provider) in &self.event_providers {
+            let slots = provider.drain_pending_slots();
+            if !slots.is_empty() {
+                event_slots.insert(provider.event_type(), slots);
+            }
+        }
+
+        // Count total channels needed
+        let entity_channel_count: usize = entity_slots.values().map(|v| v.len()).sum();
+        let event_channel_count: usize = event_slots.values().map(|v| v.len()).sum();
+        let total_channels = entity_channel_count + event_channel_count;
+
+        // Create distribution channels with shared global gate for backpressure
+        let (all_senders, all_receivers) =
+            distributor_channels::channels::<RecordBatch>(total_channels);
+        let mut sender_iter = all_senders.into_iter();
+        let mut receiver_idx = 0;
+
+        // Wire up entity channels
+        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> =
+            HashMap::new();
+        let mut slot_receiver_pairs: Vec<(ReceiverSlot, usize)> = Vec::new();
+
+        for (entity_name, slots) in &entity_slots {
+            let schema = &self.entity_schemas[entity_name.as_ref()];
+            for slot in slots {
+                let sender = sender_iter.next().expect("channel count mismatch");
+                entity_dispatcher_senders
+                    .entry(schema.serializer_hash)
+                    .or_default()
+                    .push((sender, schema.clone()));
+                slot_receiver_pairs.push((slot.clone(), receiver_idx));
+                receiver_idx += 1;
+            }
+        }
+
+        // Wire up event channels
+        let mut event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>> =
+            HashMap::new();
+
+        for (event_type, slots) in &event_slots {
+            for slot in slots {
+                let sender = sender_iter.next().expect("channel count mismatch");
+                event_dispatcher_senders
+                    .entry(event_type.message_id())
+                    .or_default()
+                    .push((sender, *event_type));
+                slot_receiver_pairs.push((slot.clone(), receiver_idx));
+                receiver_idx += 1;
+            }
+        }
+
+        // Collect parser schemas (only entity types that were referenced)
+        let parser_schemas: Vec<(u64, EntitySchema)> = self
+            .entity_schemas
+            .iter()
+            .filter(|(name, _)| entity_slots.contains_key(name.as_ref()))
+            .map(|(_, schema)| (schema.serializer_hash, schema.clone()))
+            .collect();
+
+        // Inject receivers into slots
+        let mut receivers_by_idx: HashMap<usize, BatchReceiver> =
+            all_receivers.into_iter().enumerate().collect();
+        for (slot, idx) in slot_receiver_pairs {
+            let rx = receivers_by_idx
+                .remove(&idx)
+                .expect("receiver index mismatch");
+            slot.inject(rx).map_err(|_| {
+                SessionError::Internal("Slot already filled during start()".to_string())
+            })?;
+        }
 
         let batch_size = self.batch_size;
         let stats_clone = Arc::clone(&stats);
@@ -630,19 +533,13 @@ impl StreamingSession {
         let parser_handle = self.spawn_parser(
             source,
             parser_schemas,
-            entity_senders,
-            event_senders,
+            entity_dispatcher_senders,
+            event_dispatcher_senders,
             batch_size,
             stats_clone,
         );
 
-        slot_bindings.bind()?;
-
-        execute_query_plans(
-            collected.plans,
-            collected.contexts,
-            collected.result_senders,
-        )?;
+        execute_query_plans(plans, &self.ctx, result_senders)?;
 
         Ok((parser_handle, stats))
     }
@@ -920,42 +817,54 @@ mod tests {
     }
 
     #[test]
-    fn test_collected_slots_empty() {
-        let collected = CollectedSlots::from_pending_queries(vec![]);
-
-        assert!(collected.entity_slots.is_empty());
-        assert!(collected.event_slots.is_empty());
-        assert!(collected.plans.is_empty());
-        assert!(collected.contexts.is_empty());
-        assert!(collected.result_senders.is_empty());
-        assert_eq!(collected.total_channel_count(), 0);
-    }
-
-    #[test]
-    fn test_collected_slots_channel_count() {
-        let mut entity_slots: HashMap<Arc<str>, Vec<ReceiverSlot>> = HashMap::new();
-        entity_slots.insert(
-            Arc::from("EntityA"),
-            vec![ReceiverSlot::new(), ReceiverSlot::new()],
+    fn test_register_all_providers_creates_entity_providers() {
+        let ctx = streaming_session_context();
+        let mut schemas = HashMap::new();
+        schemas.insert(
+            Arc::from("TestEntity"),
+            crate::schema::EntitySchema {
+                serializer_name: Arc::from("TestEntity"),
+                serializer_hash: 12345,
+                arrow_schema: make_test_schema(),
+                field_keys: vec![],
+                field_column_counts: vec![],
+            },
         );
-        entity_slots.insert(Arc::from("EntityB"), vec![ReceiverSlot::new()]);
 
-        let mut event_slots: HashMap<EventType, Vec<ReceiverSlot>> = HashMap::new();
-        event_slots.insert(EventType::Damage, vec![ReceiverSlot::new()]);
+        let (entity_providers, event_providers) = register_all_providers(&ctx, &schemas);
 
-        let collected = CollectedSlots {
-            entity_slots,
-            event_slots,
-            plans: vec![],
-            contexts: vec![],
-            result_senders: vec![],
-        };
+        assert_eq!(entity_providers.len(), 1);
+        assert!(entity_providers.contains_key("TestEntity"));
+        assert!(&**entity_providers["TestEntity"].entity_type() == "TestEntity");
 
-        assert_eq!(collected.total_channel_count(), 4);
+        // All event types should be registered
+        assert!(!event_providers.is_empty());
+        assert!(event_providers.contains_key("DamageEvent"));
     }
 
     #[test]
-    fn test_slot_bindings_bind_success() {
+    fn test_register_all_providers_events_registered_in_context() {
+        let ctx = streaming_session_context();
+        let schemas = HashMap::new(); // no entity schemas
+
+        let (_entity_providers, event_providers) = register_all_providers(&ctx, &schemas);
+
+        // Event tables should be visible in the context's catalog
+        let all_events = EventType::all();
+        assert_eq!(event_providers.len(), all_events.len());
+
+        for event_type in all_events {
+            let table_name = event_type.table_name();
+            assert!(
+                event_providers.contains_key(table_name),
+                "Missing event provider for {}",
+                table_name,
+            );
+        }
+    }
+
+    #[test]
+    fn test_receiver_slot_inject_and_take() {
         use crate::datafusion::distributor_channels;
 
         let (senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
@@ -963,17 +872,11 @@ mod tests {
         let slot1 = ReceiverSlot::new();
         let slot2 = ReceiverSlot::new();
 
-        let bindings = SlotBindings {
-            entity_slot_indices: vec![(slot1.clone(), 0)],
-            event_slot_indices: vec![(slot2.clone(), 1)],
-            receivers,
-        };
-
-        let result = bindings.bind();
-        assert!(result.is_ok());
+        let mut rx_iter = receivers.into_iter();
+        slot1.inject(rx_iter.next().unwrap()).unwrap();
+        slot2.inject(rx_iter.next().unwrap()).unwrap();
 
         // Verify slots were filled by taking from them
-        // (take() would panic if empty, so success means inject worked)
         let _rx1 = slot1.take();
         let _rx2 = slot2.take();
 
@@ -981,29 +884,16 @@ mod tests {
     }
 
     #[test]
-    fn test_slot_bindings_bind_fails_if_slot_already_set() {
+    fn test_receiver_slot_inject_fails_if_already_filled() {
         use crate::datafusion::distributor_channels;
 
-        let (senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
+        let (_senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
+        let mut rx_iter = receivers.into_iter();
 
         let slot = ReceiverSlot::new();
-        {
-            let (_, pre_receivers) = distributor_channels::channels::<RecordBatch>(1);
-            let pre_rx = pre_receivers.into_iter().next().unwrap();
-            slot.inject(pre_rx).unwrap();
-        }
+        slot.inject(rx_iter.next().unwrap()).unwrap();
 
-        let bindings = SlotBindings {
-            entity_slot_indices: vec![(slot, 0)],
-            event_slot_indices: vec![],
-            receivers,
-        };
-
-        let result = bindings.bind();
+        let result = slot.inject(rx_iter.next().unwrap());
         assert!(result.is_err());
-        let err = result.err().unwrap();
-        assert!(matches!(err, SessionError::Internal(_)));
-
-        drop(senders);
     }
 }
