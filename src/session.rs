@@ -20,9 +20,9 @@
 //! use futures::StreamExt;
 //!
 //! let source = DemoSource::open("match.dem").await?;
-//! let (mut session, schemas) = source.into_session().await?;
+//! let mut session = source.into_session().await?;
 //!
-//! println!("Found {} entities", schemas.len());
+//! println!("Found {} entities", session.entity_names().len());
 //!
 //! let mut pawns = session.add_query(
 //!     "SELECT tick, entity_index, m_iHealth FROM CCitadelPlayerPawn"
@@ -44,7 +44,7 @@
 //! use futures::StreamExt;
 //!
 //! let source = GotvSource::connect("http://dist1-ord1.steamcontent.com/tv/12345").await?;
-//! let (session, schemas) = source.into_session().await?;
+//! let session = source.into_session().await?;
 //!
 //! let cancel = CancellationToken::new();
 //! let mut session = session.with_cancel_token(cancel.clone());
@@ -99,7 +99,7 @@ const DEFAULT_LIVE_BATCH_SIZE: usize = 128;
 
 #[async_trait]
 pub trait IntoStreamingSession {
-    async fn into_session(self) -> Result<(StreamingSession, Schemas), SessionError>;
+    async fn into_session(self) -> Result<StreamingSession, SessionError>;
 }
 
 fn streaming_session_context() -> SessionContext {

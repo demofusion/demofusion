@@ -304,7 +304,7 @@ mod tests {
 
     async fn run_query(sql: &str) -> Vec<RecordBatch> {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut handle = session.add_query(sql).await.expect("add_query");
         let _result = session.start().expect("start");
@@ -477,7 +477,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_multi_query_different_entity_tables() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut h1 = session
             .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100")
@@ -527,7 +527,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_multi_query_same_entity_table() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut h1 = session
             .add_query(
@@ -586,7 +586,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_multi_query_different_event_tables() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut h1 = session
             .add_query("SELECT tick, damage FROM DamageEvent LIMIT 100")
@@ -635,7 +635,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_multi_query_entity_and_event() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut h_entity = session
             .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100")
@@ -697,7 +697,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_multi_query_three_queries_mixed() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let mut h1 = session
             .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 50")
@@ -761,7 +761,7 @@ mod tests {
     #[ignore = "requires test demo file"]
     async fn test_aggregation_rejected() {
         let source = DemoSource::from_bytes(load_demo_bytes().await);
-        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+        let mut session = source.into_session().await.expect("into_session");
 
         let result = session.add_query("SELECT COUNT(*) FROM DamageEvent").await;
 

@@ -4,20 +4,16 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 
-use crate::session::{SessionResult, StreamingSession, Schemas};
+use crate::session::{SessionResult, StreamingSession};
 use super::arrow_convert::schema_to_pyarrow;
 use super::exceptions::{session_error_to_pyexc, DemofusionSessionError};
 use super::query_handle::PyQueryHandle;
 
 #[pyclass(name = "StreamingSession")]
 pub struct PyStreamingSession {
-    /// The session itself, wrapped in Option so it can be consumed by start().
-    /// While the session is alive (pre-start), add_query operates on it.
-    /// After start(), the session is consumed and this becomes None.
+    /// The session itself, wrapped in Option so start() can temporarily take it.
+    /// After start(), the session is put back so schema queries still work.
     inner: Arc<parking_lot::Mutex<Option<StreamingSession>>>,
-    /// Discovered schemas from into_session(), kept separately since they're
-    /// needed after start() consumes the session.
-    schemas: Schemas,
     /// The result from start(), kept alive to hold the parser JoinHandle.
     /// Dropping this would drop the parser task handle.
     _session_result: Arc<parking_lot::Mutex<Option<SessionResult>>>,
@@ -28,16 +24,14 @@ pub struct PyStreamingSession {
 }
 
 impl PyStreamingSession {
-    /// Create from a Rust StreamingSession, Schemas, and optional config values.
+    /// Create from a Rust StreamingSession and optional config values.
     pub fn from_session(
         session: StreamingSession,
-        schemas: Schemas,
         batch_size: Option<usize>,
         reject_pipeline_breakers: Option<bool>,
     ) -> Self {
         PyStreamingSession {
             inner: Arc::new(parking_lot::Mutex::new(Some(session))),
-            schemas,
             _session_result: Arc::new(parking_lot::Mutex::new(None)),
             batch_size,
             reject_pipeline_breakers,
@@ -47,25 +41,37 @@ impl PyStreamingSession {
 
 #[pymethods]
 impl PyStreamingSession {
-    /// Get all available table schemas as a dictionary mapping table name to PyArrow Schema.
+    /// Get all available entity table schemas as a dictionary mapping table name to PyArrow Schema.
     #[getter]
     fn schemas(&self, py: Python<'_>) -> PyResult<PyObject> {
+        let guard = self.inner.lock();
+        let session = guard.as_ref().ok_or_else(|| {
+            DemofusionSessionError::new_err("Session has been closed")
+        })?;
         let dict = pyo3::types::PyDict::new_bound(py);
-        for (name, entity_schema) in &self.schemas {
+        for entity_schema in session.schemas() {
             let py_schema = schema_to_pyarrow(py, &entity_schema.arrow_schema)?;
-            dict.set_item(name.as_ref(), py_schema)?;
+            dict.set_item(entity_schema.serializer_name.as_ref(), py_schema)?;
         }
         Ok(dict.into())
     }
 
     /// List all available table names.
-    fn get_tables(&self) -> Vec<String> {
-        self.schemas.keys().map(|s| s.to_string()).collect()
+    fn get_tables(&self) -> PyResult<Vec<String>> {
+        let guard = self.inner.lock();
+        let session = guard.as_ref().ok_or_else(|| {
+            DemofusionSessionError::new_err("Session has been closed")
+        })?;
+        Ok(session.entity_names().into_iter().map(|s| s.to_string()).collect())
     }
 
     /// Get PyArrow schema for a specific table (returns None if not found).
     fn get_schema(&self, py: Python<'_>, table_name: &str) -> PyResult<Option<PyObject>> {
-        match self.schemas.get(table_name) {
+        let guard = self.inner.lock();
+        let session = guard.as_ref().ok_or_else(|| {
+            DemofusionSessionError::new_err("Session has been closed")
+        })?;
+        match session.schema(table_name) {
             Some(entity_schema) => {
                 let py_schema = schema_to_pyarrow(py, &entity_schema.arrow_schema)?;
                 Ok(Some(py_schema))
@@ -83,7 +89,7 @@ impl PyStreamingSession {
                 let mut guard = inner.lock();
                 guard.take().ok_or_else(|| {
                     DemofusionSessionError::new_err(
-                        "Cannot add query after start()",
+                        "Cannot add query after session has been closed",
                     )
                 })?
             };
@@ -103,16 +109,16 @@ impl PyStreamingSession {
         })
     }
 
-    /// Begin streaming parser (synchronous). Consumes the session internally.
+    /// Begin streaming parser (synchronous).
     ///
     /// Applies any stored configuration (batch_size, reject_pipeline_breakers)
     /// before starting. After calling start(), no more queries can be added.
     /// The parser task runs in the background and feeds data to all registered
-    /// QueryHandles.
+    /// QueryHandles. The session remains accessible for schema queries.
     fn start(&self) -> PyResult<()> {
         let mut inner_guard = self.inner.lock();
         let mut session = inner_guard.take().ok_or_else(|| {
-            DemofusionSessionError::new_err("Session already started")
+            DemofusionSessionError::new_err("Session already started or closed")
         })?;
 
         // Apply stored configuration
@@ -134,6 +140,11 @@ impl PyStreamingSession {
         let mut result_guard = self._session_result.lock();
         *result_guard = Some(session_result);
 
+        // Put the session back — it's still useful for schema queries.
+        // The source has been consumed by start(), but entity_schemas and
+        // provider maps remain accessible.
+        *inner_guard = Some(session);
+
         Ok(())
     }
 
@@ -149,7 +160,7 @@ impl PyStreamingSession {
         _exc_val: Option<&Bound<'_, PyAny>>,
         _exc_tb: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<()> {
-        // Drop the session if it hasn't been started
+        // Drop the session
         self.inner.lock().take();
         // Drop the session result (and parser task handle)
         self._session_result.lock().take();
