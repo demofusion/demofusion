@@ -2,12 +2,12 @@
 
 #[cfg(feature = "gotv")]
 pub mod gotv_impl {
-    use pyo3::prelude::*;
-    use pyo3_async_runtimes::tokio::future_into_py;
-    use crate::gotv::GotvSource;
-    use crate::session::IntoStreamingSession;
     use super::super::exceptions::session_error_to_pyexc;
     use super::super::session::PyStreamingSession;
+    use crate::gotv::GotvSource;
+    use crate::session::IntoStreamingSession;
+    use pyo3::prelude::*;
+    use pyo3_async_runtimes::tokio::future_into_py;
 
     #[pyclass(name = "GotvSource")]
     pub struct PyGotvSource {
@@ -38,13 +38,11 @@ pub mod gotv_impl {
             let inner = self.inner.clone();
             future_into_py(py, async move {
                 match inner.into_session().await {
-                    Ok(session) => {
-                        Ok(PyStreamingSession::from_session(
-                            session,
-                            batch_size,
-                            reject_pipeline_breakers,
-                        ))
-                    }
+                    Ok(session) => Ok(PyStreamingSession::from_session(
+                        session,
+                        batch_size,
+                        reject_pipeline_breakers,
+                    )),
                     Err(e) => Err(session_error_to_pyexc(&e)),
                 }
             })

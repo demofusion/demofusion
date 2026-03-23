@@ -108,6 +108,13 @@ fn streaming_session_context() -> SessionContext {
     SessionContext::new_with_config(config)
 }
 
+/// Concrete-typed maps of table providers, keyed by table name.
+/// Returned by [`register_all_providers`] for later draining at `start()` time.
+type ProviderMaps = (
+    HashMap<Arc<str>, Arc<EntityTableProvider>>,
+    HashMap<Arc<str>, Arc<EventTableProvider>>,
+);
+
 /// Create and register all entity + event table providers in the given context.
 ///
 /// Entity providers come from the discovered schemas (one per entity type).
@@ -115,13 +122,7 @@ fn streaming_session_context() -> SessionContext {
 /// upfront so they appear in `get_tables()` and are queryable).
 ///
 /// Returns concrete-typed maps for later draining at `start()` time.
-fn register_all_providers(
-    ctx: &SessionContext,
-    schemas: &Schemas,
-) -> (
-    HashMap<Arc<str>, Arc<EntityTableProvider>>,
-    HashMap<Arc<str>, Arc<EventTableProvider>>,
-) {
+fn register_all_providers(ctx: &SessionContext, schemas: &Schemas) -> ProviderMaps {
     let mut entity_providers = HashMap::with_capacity(schemas.len());
     for (name, schema) in schemas {
         let provider = Arc::new(EntityTableProvider::new(
@@ -479,7 +480,7 @@ impl StreamingSession {
         }
 
         let mut event_slots: HashMap<EventType, Vec<ReceiverSlot>> = HashMap::new();
-        for (_name, provider) in &self.event_providers {
+        for provider in self.event_providers.values() {
             let slots = provider.drain_pending_slots();
             if !slots.is_empty() {
                 event_slots.insert(provider.event_type(), slots);

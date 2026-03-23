@@ -4,10 +4,10 @@ use pyo3::prelude::*;
 use pyo3_async_runtimes::tokio::future_into_py;
 use std::sync::Arc;
 
-use crate::session::{SessionResult, StreamingSession};
 use super::arrow_convert::schema_to_pyarrow;
-use super::exceptions::{session_error_to_pyexc, DemofusionSessionError};
+use super::exceptions::{DemofusionSessionError, session_error_to_pyexc};
 use super::query_handle::PyQueryHandle;
+use crate::session::{SessionResult, StreamingSession};
 
 #[pyclass(name = "StreamingSession")]
 pub struct PyStreamingSession {
@@ -46,9 +46,9 @@ impl PyStreamingSession {
     #[getter]
     fn schemas(&self, py: Python<'_>) -> PyResult<PyObject> {
         let guard = self.inner.blocking_lock();
-        let session = guard.as_ref().ok_or_else(|| {
-            DemofusionSessionError::new_err("Session has been closed")
-        })?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| DemofusionSessionError::new_err("Session has been closed"))?;
         let dict = pyo3::types::PyDict::new_bound(py);
         // Entity schemas
         for entity_schema in session.schemas() {
@@ -68,18 +68,22 @@ impl PyStreamingSession {
     /// List all available table names (entity + event).
     fn get_tables(&self) -> PyResult<Vec<String>> {
         let guard = self.inner.blocking_lock();
-        let session = guard.as_ref().ok_or_else(|| {
-            DemofusionSessionError::new_err("Session has been closed")
-        })?;
-        Ok(session.all_table_names().into_iter().map(|s| s.to_string()).collect())
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| DemofusionSessionError::new_err("Session has been closed"))?;
+        Ok(session
+            .all_table_names()
+            .into_iter()
+            .map(|s| s.to_string())
+            .collect())
     }
 
     /// Get PyArrow schema for a specific table (entity or event). Returns None if not found.
     fn get_schema(&self, py: Python<'_>, table_name: &str) -> PyResult<Option<PyObject>> {
         let guard = self.inner.blocking_lock();
-        let session = guard.as_ref().ok_or_else(|| {
-            DemofusionSessionError::new_err("Session has been closed")
-        })?;
+        let session = guard
+            .as_ref()
+            .ok_or_else(|| DemofusionSessionError::new_err("Session has been closed"))?;
         match session.get_table_schema(table_name) {
             Some(arrow_schema) => {
                 let py_schema = schema_to_pyarrow(py, &arrow_schema)?;
@@ -95,9 +99,7 @@ impl PyStreamingSession {
         future_into_py(py, async move {
             let mut guard = inner.lock().await;
             let session = guard.as_mut().ok_or_else(|| {
-                DemofusionSessionError::new_err(
-                    "Cannot add query after session has been closed",
-                )
+                DemofusionSessionError::new_err("Cannot add query after session has been closed")
             })?;
 
             match session.add_query(&sql).await {
@@ -115,9 +117,9 @@ impl PyStreamingSession {
     /// QueryHandles. The session remains accessible for schema queries.
     fn start(&self) -> PyResult<()> {
         let mut guard = self.inner.blocking_lock();
-        let _session = guard.as_mut().ok_or_else(|| {
-            DemofusionSessionError::new_err("Session already started or closed")
-        })?;
+        let _session = guard
+            .as_mut()
+            .ok_or_else(|| DemofusionSessionError::new_err("Session already started or closed"))?;
 
         // Apply stored configuration.
         // These are builder methods that take `self` by value, so we need to

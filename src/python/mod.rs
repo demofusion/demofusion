@@ -1,17 +1,17 @@
 //! PyO3 Python bindings for demofusion.
 
-pub mod exceptions;
-pub mod demo;
-pub mod gotv;
-pub mod session;
-pub mod query_handle;
 pub mod arrow_convert;
+pub mod demo;
+pub mod exceptions;
+pub mod gotv;
+pub mod query_handle;
+pub mod session;
 
-use pyo3::prelude::*;
-use self::exceptions::*;
 use self::demo::PyDemoSource;
-use self::session::PyStreamingSession;
+use self::exceptions::*;
 use self::query_handle::PyQueryHandle;
+use self::session::PyStreamingSession;
+use pyo3::prelude::*;
 
 #[cfg(feature = "gotv")]
 use self::gotv::PyGotvSource;
@@ -27,19 +27,37 @@ fn _demofusion(py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 
     // Register exception classes
     m.add("DemofusionError", py.get_type_bound::<DemofusionError>())?;
-    m.add("DemofusionIOError", py.get_type_bound::<DemofusionIOError>())?;
-    m.add("DemofusionSchemaError", py.get_type_bound::<DemofusionSchemaError>())?;
-    m.add("DemofusionArrowError", py.get_type_bound::<DemofusionArrowError>())?;
-    m.add("DemofusionDataFusionError", py.get_type_bound::<DemofusionDataFusionError>())?;
-    m.add("DemofusionHasteError", py.get_type_bound::<DemofusionHasteError>())?;
-    m.add("DemofusionSessionError", py.get_type_bound::<DemofusionSessionError>())?;
+    m.add(
+        "DemofusionIOError",
+        py.get_type_bound::<DemofusionIOError>(),
+    )?;
+    m.add(
+        "DemofusionSchemaError",
+        py.get_type_bound::<DemofusionSchemaError>(),
+    )?;
+    m.add(
+        "DemofusionArrowError",
+        py.get_type_bound::<DemofusionArrowError>(),
+    )?;
+    m.add(
+        "DemofusionDataFusionError",
+        py.get_type_bound::<DemofusionDataFusionError>(),
+    )?;
+    m.add(
+        "DemofusionHasteError",
+        py.get_type_bound::<DemofusionHasteError>(),
+    )?;
+    m.add(
+        "DemofusionSessionError",
+        py.get_type_bound::<DemofusionSessionError>(),
+    )?;
 
     // Register classes
     m.add_class::<PyDemoSource>()?;
-    
+
     #[cfg(feature = "gotv")]
     m.add_class::<PyGotvSource>()?;
-    
+
     m.add_class::<PyStreamingSession>()?;
     m.add_class::<PyQueryHandle>()?;
 

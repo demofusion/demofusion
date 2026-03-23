@@ -93,7 +93,10 @@ mod tests {
             .await
             .expect("Failed to create session");
 
-        assert!(!session.entity_names().is_empty(), "Should discover at least one schema");
+        assert!(
+            !session.entity_names().is_empty(),
+            "Should discover at least one schema"
+        );
         assert!(
             session.schema("CCitadelPlayerPawn").is_some(),
             "Should contain CCitadelPlayerPawn entity"

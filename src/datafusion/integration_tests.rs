@@ -152,12 +152,10 @@ mod tests {
         let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema);
+        let damage_provider = EventTableProvider::new(EventType::Damage, damage_schema);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
-        let kill_provider =
-            EventTableProvider::new(EventType::HeroKilled, kill_schema);
+        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema);
 
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
@@ -201,12 +199,10 @@ mod tests {
         let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema);
+        let damage_provider = EventTableProvider::new(EventType::Damage, damage_schema);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
-        let kill_provider =
-            EventTableProvider::new(EventType::HeroKilled, kill_schema);
+        let kill_provider = EventTableProvider::new(EventType::HeroKilled, kill_schema);
 
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
@@ -242,8 +238,7 @@ mod tests {
         let ctx = SessionContext::new_with_config(streaming_session_config());
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
-        let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema);
+        let damage_provider = EventTableProvider::new(EventType::Damage, damage_schema);
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
 
@@ -259,10 +254,8 @@ mod tests {
                 false,
             ),
         ]);
-        let entity_provider = EntityTableProvider::new(
-            Arc::new(entity_schema),
-            Arc::from("CCitadelPlayerPawn"),
-        );
+        let entity_provider =
+            EntityTableProvider::new(Arc::new(entity_schema), Arc::from("CCitadelPlayerPawn"));
         ctx.register_table("CCitadelPlayerPawn", Arc::new(entity_provider))
             .unwrap();
 
@@ -566,8 +559,16 @@ mod tests {
         .await
         .expect("multi-query same table should complete within 30s");
 
-        assert_eq!(total_rows(&r1), 20, "filter entity_index=65 should return 20 rows");
-        assert_eq!(total_rows(&r2), 20, "filter entity_index=72 should return 20 rows");
+        assert_eq!(
+            total_rows(&r1),
+            20,
+            "filter entity_index=65 should return 20 rows"
+        );
+        assert_eq!(
+            total_rows(&r2),
+            20,
+            "filter entity_index=72 should return 20 rows"
+        );
 
         let indices_1 = extract_i32_column(&r1, "entity_index");
         let indices_2 = extract_i32_column(&r2, "entity_index");
@@ -648,26 +649,25 @@ mod tests {
 
         let _result = session.start().expect("start");
 
-        let (r_entity, r_event) =
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                let f1 = async {
-                    let mut batches = Vec::new();
-                    while let Some(result) = h_entity.next().await {
-                        batches.push(result.expect("batch"));
-                    }
-                    batches
-                };
-                let f2 = async {
-                    let mut batches = Vec::new();
-                    while let Some(result) = h_event.next().await {
-                        batches.push(result.expect("batch"));
-                    }
-                    batches
-                };
-                tokio::join!(f1, f2)
-            })
-            .await
-            .expect("mixed multi-query should complete within 30s");
+        let (r_entity, r_event) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let f1 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h_entity.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f2 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h_event.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            tokio::join!(f1, f2)
+        })
+        .await
+        .expect("mixed multi-query should complete within 30s");
 
         assert_eq!(
             total_rows(&r_entity),

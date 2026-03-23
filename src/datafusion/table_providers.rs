@@ -43,10 +43,16 @@ pub(crate) type BatchReceiver = DistributionReceiver<RecordBatch>;
 #[derive(Clone)]
 pub struct ReceiverSlot(Arc<Mutex<Option<BatchReceiver>>>);
 
+impl Default for ReceiverSlot {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+}
+
 impl ReceiverSlot {
     /// Creates a new empty slot with no receiver.
     pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(None)))
+        Self::default()
     }
 
     /// Injects a receiver into the slot. Returns `Err` if the slot was already filled.
@@ -471,7 +477,11 @@ mod tests {
             .expect("scan 3");
 
         let slots = provider.drain_pending_slots();
-        assert_eq!(slots.len(), 3, "three scans should create three pending slots");
+        assert_eq!(
+            slots.len(),
+            3,
+            "three scans should create three pending slots"
+        );
     }
 
     #[tokio::test]
