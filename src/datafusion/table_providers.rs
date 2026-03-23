@@ -74,19 +74,37 @@ fn build_tick_ordering(schema: &SchemaRef, projection: Option<&Vec<usize>>) -> V
 ///
 /// Receives pre-batched RecordBatches from a DistributionReceiver, enabling
 /// streaming SQL queries over entities discovered from demo/GOTV data.
+///
+/// Each call to `scan()` creates a new empty [`ReceiverSlot`] and registers it
+/// in `pending_slots`. At `start()` time, the session drains these slots to
+/// determine which tables were referenced by queries and how many distribution
+/// channels to create.
 pub struct EntityTableProvider {
     schema: SchemaRef,
     entity_type: Arc<str>,
-    receiver_slot: ReceiverSlot,
+    pending_slots: Arc<Mutex<Vec<ReceiverSlot>>>,
 }
 
 impl EntityTableProvider {
-    pub fn new(schema: SchemaRef, entity_type: Arc<str>, receiver_slot: ReceiverSlot) -> Self {
+    pub fn new(schema: SchemaRef, entity_type: Arc<str>) -> Self {
         Self {
             schema,
             entity_type,
-            receiver_slot,
+            pending_slots: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns the entity type name (e.g., "CCitadelPlayerPawn").
+    pub fn entity_type(&self) -> &Arc<str> {
+        &self.entity_type
+    }
+
+    /// Drain all pending receiver slots created by `scan()` calls.
+    ///
+    /// Called by the session at `start()` time to discover which tables were
+    /// referenced by queries and to inject distribution channel receivers.
+    pub fn drain_pending_slots(&self) -> Vec<ReceiverSlot> {
+        self.pending_slots.lock().drain(..).collect()
     }
 }
 
@@ -120,10 +138,13 @@ impl TableProvider for EntityTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
+        let slot = new_receiver_slot();
+        self.pending_slots.lock().push(slot.clone());
+
         let partition_stream = EntityPartitionStream {
             schema: self.schema.clone(),
             entity_type: self.entity_type.clone(),
-            receiver_slot: self.receiver_slot.clone(),
+            receiver_slot: slot,
         };
 
         let partition_streams: Vec<Arc<dyn PartitionStream>> = vec![Arc::new(partition_stream)];
@@ -187,19 +208,37 @@ impl PartitionStream for EntityPartitionStream {
 ///
 /// Receives pre-batched RecordBatches from a DistributionReceiver, enabling
 /// streaming SQL queries over game events from demo/GOTV data.
+///
+/// Each call to `scan()` creates a new empty [`ReceiverSlot`] and registers it
+/// in `pending_slots`. At `start()` time, the session drains these slots to
+/// determine which tables were referenced by queries and how many distribution
+/// channels to create.
 pub struct EventTableProvider {
     event_type: EventType,
     schema: SchemaRef,
-    receiver_slot: ReceiverSlot,
+    pending_slots: Arc<Mutex<Vec<ReceiverSlot>>>,
 }
 
 impl EventTableProvider {
-    pub fn new(event_type: EventType, schema: SchemaRef, receiver_slot: ReceiverSlot) -> Self {
+    pub fn new(event_type: EventType, schema: SchemaRef) -> Self {
         Self {
             event_type,
             schema,
-            receiver_slot,
+            pending_slots: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// Returns the event type.
+    pub fn event_type(&self) -> EventType {
+        self.event_type
+    }
+
+    /// Drain all pending receiver slots created by `scan()` calls.
+    ///
+    /// Called by the session at `start()` time to discover which tables were
+    /// referenced by queries and to inject distribution channel receivers.
+    pub fn drain_pending_slots(&self) -> Vec<ReceiverSlot> {
+        self.pending_slots.lock().drain(..).collect()
     }
 }
 
@@ -233,10 +272,13 @@ impl TableProvider for EventTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
+        let slot = new_receiver_slot();
+        self.pending_slots.lock().push(slot.clone());
+
         let partition_stream = EventPartitionStream {
             event_type: self.event_type,
             schema: self.schema.clone(),
-            receiver_slot: self.receiver_slot.clone(),
+            receiver_slot: slot,
         };
 
         let partition_streams: Vec<Arc<dyn PartitionStream>> = vec![Arc::new(partition_stream)];
@@ -317,11 +359,11 @@ mod tests {
     #[test]
     fn test_entity_table_provider_creation() {
         let schema = make_test_schema();
-        let slot = new_receiver_slot();
-        let provider = EntityTableProvider::new(schema.clone(), Arc::from("TestEntity"), slot);
+        let provider = EntityTableProvider::new(schema.clone(), Arc::from("TestEntity"));
 
-        assert_eq!(&*provider.entity_type, "TestEntity");
+        assert_eq!(&**provider.entity_type(), "TestEntity");
         assert_eq!(provider.schema().fields().len(), 3);
+        assert!(provider.drain_pending_slots().is_empty());
     }
 
     #[test]
@@ -329,11 +371,11 @@ mod tests {
         use crate::events::{EventType, event_schema};
 
         let schema = event_schema("DamageEvent").expect("DamageEvent schema");
-        let slot = new_receiver_slot();
-        let provider = EventTableProvider::new(EventType::Damage, schema.clone(), slot);
+        let provider = EventTableProvider::new(EventType::Damage, schema.clone());
 
-        assert_eq!(provider.event_type, EventType::Damage);
+        assert_eq!(provider.event_type(), EventType::Damage);
         assert!(provider.schema().field_with_name("tick").is_ok());
+        assert!(provider.drain_pending_slots().is_empty());
     }
 
     #[tokio::test]
