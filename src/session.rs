@@ -70,7 +70,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use futures::{Stream, StreamExt};
-use parking_lot::Mutex;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -82,7 +81,7 @@ use crate::datafusion::distributor_channels::{self, DistributionReceiver, Distri
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::datafusion::table_providers::{
-    EntityTableProvider, EventTableProvider, new_receiver_slot,
+    EntityTableProvider, EventTableProvider, ReceiverSlot,
 };
 use crate::events::{EventType, event_schema};
 use crate::haste::core::packet_source::PacketSource;
@@ -91,7 +90,6 @@ use crate::sql::extract_table_names;
 
 type BatchReceiver = DistributionReceiver<RecordBatch>;
 type BatchSender = DistributionSender<RecordBatch>;
-type ReceiverSlot = Arc<Mutex<Option<BatchReceiver>>>;
 type ParserResult = (JoinHandle<Result<(), SessionError>>, Arc<StreamingStats>);
 type DispatcherChannelParts = (
     HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
@@ -295,22 +293,18 @@ impl SlotBindings {
             let rx = receivers_by_idx
                 .remove(&idx)
                 .expect("receiver index mismatch");
-            let old = slot.lock().replace(rx);
-            if old.is_some() {
-                return Err(SessionError::Internal(
-                    "Entity slot already set".to_string(),
-                ));
-            }
+            slot.inject(rx).map_err(|_| {
+                SessionError::Internal("Entity slot already set".to_string())
+            })?;
         }
 
         for (slot, idx) in self.event_slot_indices {
             let rx = receivers_by_idx
                 .remove(&idx)
                 .expect("receiver index mismatch");
-            let old = slot.lock().replace(rx);
-            if old.is_some() {
-                return Err(SessionError::Internal("Event slot already set".to_string()));
-            }
+            slot.inject(rx).map_err(|_| {
+                SessionError::Internal("Event slot already set".to_string())
+            })?;
         }
 
         Ok(())
@@ -530,7 +524,7 @@ impl StreamingSession {
         let mut entity_slots: HashMap<Arc<str>, ReceiverSlot> = HashMap::new();
         for entity_type in &entity_types {
             let schema = &self.schemas[entity_type];
-            let slot = new_receiver_slot();
+            let slot = ReceiverSlot::new();
             entity_slots.insert(Arc::clone(entity_type), slot.clone());
 
             let provider = EntityTableProvider::new(
@@ -549,7 +543,7 @@ impl StreamingSession {
                     event_type.table_name()
                 ))
             })?;
-            let slot = new_receiver_slot();
+            let slot = ReceiverSlot::new();
             event_slots.insert(*event_type, slot.clone());
 
             let provider = EventTableProvider::new(*event_type, schema, slot);
@@ -939,17 +933,15 @@ mod tests {
 
     #[test]
     fn test_collected_slots_channel_count() {
-        use crate::datafusion::table_providers::new_receiver_slot;
-
         let mut entity_slots: HashMap<Arc<str>, Vec<ReceiverSlot>> = HashMap::new();
         entity_slots.insert(
             Arc::from("EntityA"),
-            vec![new_receiver_slot(), new_receiver_slot()],
+            vec![ReceiverSlot::new(), ReceiverSlot::new()],
         );
-        entity_slots.insert(Arc::from("EntityB"), vec![new_receiver_slot()]);
+        entity_slots.insert(Arc::from("EntityB"), vec![ReceiverSlot::new()]);
 
         let mut event_slots: HashMap<EventType, Vec<ReceiverSlot>> = HashMap::new();
-        event_slots.insert(EventType::Damage, vec![new_receiver_slot()]);
+        event_slots.insert(EventType::Damage, vec![ReceiverSlot::new()]);
 
         let collected = CollectedSlots {
             entity_slots,
@@ -965,12 +957,11 @@ mod tests {
     #[test]
     fn test_slot_bindings_bind_success() {
         use crate::datafusion::distributor_channels;
-        use crate::datafusion::table_providers::new_receiver_slot;
 
         let (senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
 
-        let slot1 = new_receiver_slot();
-        let slot2 = new_receiver_slot();
+        let slot1 = ReceiverSlot::new();
+        let slot2 = ReceiverSlot::new();
 
         let bindings = SlotBindings {
             entity_slot_indices: vec![(slot1.clone(), 0)],
@@ -981,8 +972,10 @@ mod tests {
         let result = bindings.bind();
         assert!(result.is_ok());
 
-        assert!(slot1.lock().is_some());
-        assert!(slot2.lock().is_some());
+        // Verify slots were filled by taking from them
+        // (take() would panic if empty, so success means inject worked)
+        let _rx1 = slot1.take();
+        let _rx2 = slot2.take();
 
         drop(senders);
     }
@@ -990,15 +983,14 @@ mod tests {
     #[test]
     fn test_slot_bindings_bind_fails_if_slot_already_set() {
         use crate::datafusion::distributor_channels;
-        use crate::datafusion::table_providers::new_receiver_slot;
 
         let (senders, receivers) = distributor_channels::channels::<RecordBatch>(2);
 
-        let slot = new_receiver_slot();
+        let slot = ReceiverSlot::new();
         {
             let (_, pre_receivers) = distributor_channels::channels::<RecordBatch>(1);
             let pre_rx = pre_receivers.into_iter().next().unwrap();
-            slot.lock().replace(pre_rx);
+            slot.inject(pre_rx).unwrap();
         }
 
         let bindings = SlotBindings {
