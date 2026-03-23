@@ -77,21 +77,20 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use crate::datafusion::distributor_channels::{self, DistributionReceiver, DistributionSender};
+use crate::datafusion::distributor_channels::{self, DistributionSender};
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::datafusion::table_providers::{
-    EntityTableProvider, EventTableProvider, ReceiverSlot,
+    BatchReceiver, EntityTableProvider, EventTableProvider, ReceiverSlot,
 };
 use crate::events::{EventType, event_schema};
 use crate::haste::core::packet_source::PacketSource;
 use crate::schema::EntitySchema;
 
-type BatchReceiver = DistributionReceiver<RecordBatch>;
 type BatchSender = DistributionSender<RecordBatch>;
 type ParserResult = (JoinHandle<Result<(), SessionError>>, Arc<StreamingStats>);
 
-pub type Schemas = HashMap<Arc<str>, EntitySchema>;
+pub(crate) type Schemas = HashMap<Arc<str>, EntitySchema>;
 
 const DEFAULT_DEMO_BATCH_SIZE: usize = 1024;
 #[cfg(feature = "gotv")]
