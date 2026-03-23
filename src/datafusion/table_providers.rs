@@ -29,7 +29,7 @@ use crate::datafusion::distribution_stream::DistributionReceiverStream;
 use crate::datafusion::distributor_channels::DistributionReceiver;
 use crate::events::EventType;
 
-pub type BatchReceiver = DistributionReceiver<RecordBatch>;
+pub(crate) type BatchReceiver = DistributionReceiver<RecordBatch>;
 
 /// Shared slot for injecting a distribution channel receiver into a PartitionStream.
 ///

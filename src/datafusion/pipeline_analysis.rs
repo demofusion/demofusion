@@ -97,34 +97,6 @@ impl PipelineAnalysis {
     }
 }
 
-/// Format a physical plan as a tree showing emission types and boundedness.
-///
-/// Useful for debugging query plans to understand streaming behavior.
-pub fn format_plan_tree(plan: &Arc<dyn ExecutionPlan>) -> String {
-    let mut lines = Vec::new();
-    format_plan_node(plan, 0, &mut lines);
-    lines.join("\n")
-}
-
-fn format_plan_node(plan: &Arc<dyn ExecutionPlan>, indent: usize, lines: &mut Vec<String>) {
-    let prefix = "  ".repeat(indent);
-    let name = plan.name();
-    let emission = plan.pipeline_behavior();
-    let boundedness = plan.boundedness();
-
-    let is_breaker = matches!(emission, EmissionType::Final);
-    let marker = if is_breaker { "[BREAKER]" } else { "[OK]" };
-
-    lines.push(format!(
-        "{}{} {} | emission={:?} boundedness={:?}",
-        prefix, marker, name, emission, boundedness
-    ));
-
-    for child in plan.children() {
-        format_plan_node(child, indent + 1, lines);
-    }
-}
-
 /// Analyze a physical plan for pipeline breakers.
 ///
 /// Walks the entire plan tree and identifies operators that are *root cause*
