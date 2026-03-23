@@ -25,7 +25,7 @@
 //!
 //! // Connect and discover schemas
 //! let source = GotvSource::connect("http://dist1-ord1.steamcontent.com/tv/18895867").await?;
-//! let (session, schemas) = source.into_session().await?;
+//! let session = source.into_session().await?;
 //!
 //! // Configure cancellation
 //! let cancel = CancellationToken::new();

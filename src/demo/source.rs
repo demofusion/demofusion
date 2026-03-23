@@ -6,7 +6,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 
-use crate::session::{IntoStreamingSession, Schemas, SessionError, StreamingSession};
+use crate::session::{IntoStreamingSession, SessionError, StreamingSession};
 use crate::visitor::discover_schemas_from_demo;
 
 pub struct DemoSource {
@@ -28,19 +28,19 @@ impl DemoSource {
 
 #[async_trait]
 impl IntoStreamingSession for DemoSource {
-    async fn into_session(self) -> Result<(StreamingSession, Schemas), SessionError> {
+    async fn into_session(self) -> Result<StreamingSession, SessionError> {
         let schema_vec = discover_schemas_from_demo(&self.bytes)
             .await
             .map_err(|e| SessionError::Schema(e.to_string()))?;
 
-        let schemas: Schemas = schema_vec
+        let schemas: crate::session::Schemas = schema_vec
             .into_iter()
             .map(|s| (Arc::clone(&s.serializer_name), s))
             .collect();
 
-        let session = StreamingSession::from_demo_bytes_internal(self.bytes, schemas.clone());
+        let session = StreamingSession::from_demo_bytes_internal(self.bytes, schemas);
 
-        Ok((session, schemas))
+        Ok(session)
     }
 }
 
@@ -88,14 +88,14 @@ mod tests {
         let source = DemoSource::open(&demo_path)
             .await
             .expect("Failed to open demo");
-        let (session, schemas) = source
+        let session = source
             .into_session()
             .await
             .expect("Failed to create session");
 
-        assert!(!schemas.is_empty(), "Should discover at least one schema");
+        assert!(!session.entity_names().is_empty(), "Should discover at least one schema");
         assert!(
-            schemas.contains_key("CCitadelPlayerPawn"),
+            session.schema("CCitadelPlayerPawn").is_some(),
             "Should contain CCitadelPlayerPawn entity"
         );
         assert!(!session.entity_names().is_empty());
@@ -112,7 +112,7 @@ mod tests {
         let source = DemoSource::open(&demo_path)
             .await
             .expect("Failed to open demo");
-        let (mut session, _schemas) = source
+        let mut session = source
             .into_session()
             .await
             .expect("Failed to create session");

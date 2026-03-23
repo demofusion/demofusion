@@ -12,9 +12,9 @@
 //!
 //! // Open a demo file and create a session
 //! let source = DemoSource::open("match.dem").await?;
-//! let (mut session, schemas) = source.into_session().await?;
+//! let mut session = source.into_session().await?;
 //!
-//! println!("Available entities: {:?}", schemas.keys().collect::<Vec<_>>());
+//! println!("Available entities: {:?}", session.entity_names());
 //!
 //! // Register queries
 //! let mut pawns = session.add_query(

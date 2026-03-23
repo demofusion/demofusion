@@ -7,7 +7,7 @@ use bytes::Bytes;
 
 use super::client::BroadcastClient;
 use super::error::GotvError;
-use crate::session::{IntoStreamingSession, Schemas, SessionError, StreamingSession};
+use crate::session::{IntoStreamingSession, SessionError, StreamingSession};
 use crate::visitor::discover_schemas_from_broadcast;
 
 pub struct GotvSource {
@@ -35,20 +35,20 @@ impl GotvSource {
 
 #[async_trait]
 impl IntoStreamingSession for GotvSource {
-    async fn into_session(self) -> Result<(StreamingSession, Schemas), SessionError> {
+    async fn into_session(self) -> Result<StreamingSession, SessionError> {
         let schema_vec = discover_schemas_from_broadcast(&self.start_packet)
             .await
             .map_err(|e| SessionError::Schema(e.to_string()))?;
 
-        let schemas: Schemas = schema_vec
+        let schemas: crate::session::Schemas = schema_vec
             .into_iter()
             .map(|s| (Arc::clone(&s.serializer_name), s))
             .collect();
 
         let session =
-            StreamingSession::from_gotv_internal(self.client, schemas.clone(), self.start_packet);
+            StreamingSession::from_gotv_internal(self.client, schemas, self.start_packet);
 
-        Ok((session, schemas))
+        Ok(session)
     }
 }
 

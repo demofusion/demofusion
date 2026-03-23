@@ -16,5 +16,5 @@ pub mod gotv;
 pub mod python;
 
 pub use session::{
-    IntoStreamingSession, QueryHandle, Schemas, SessionError, SessionResult, StreamingSession,
+    IntoStreamingSession, QueryHandle, SessionError, SessionResult, StreamingSession,
 };

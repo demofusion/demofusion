@@ -57,10 +57,9 @@ impl PyDemoSource {
                 )
             })?;
             match source.into_session().await {
-                Ok((session, schemas)) => {
+                Ok(session) => {
                     Ok(PyStreamingSession::from_session(
                         session,
-                        schemas,
                         batch_size,
                         reject_pipeline_breakers,
                     ))

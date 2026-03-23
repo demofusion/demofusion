@@ -38,10 +38,9 @@ pub mod gotv_impl {
             let inner = self.inner.clone();
             future_into_py(py, async move {
                 match inner.into_session().await {
-                    Ok((session, schemas)) => {
+                    Ok(session) => {
                         Ok(PyStreamingSession::from_session(
                             session,
-                            schemas,
                             batch_size,
                             reject_pipeline_breakers,
                         ))
