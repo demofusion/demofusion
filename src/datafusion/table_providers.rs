@@ -372,6 +372,7 @@ impl PartitionStream for EventPartitionStream {
 mod tests {
     use super::*;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::prelude::SessionContext;
 
     fn make_test_schema() -> SchemaRef {
         Arc::new(Schema::new(vec![
@@ -380,6 +381,42 @@ mod tests {
             Field::new("test_field", DataType::Int32, true),
         ]))
     }
+
+    // =========================================================================
+    // ReceiverSlot tests
+    // =========================================================================
+
+    #[test]
+    #[should_panic(expected = "ReceiverSlot::take() called on empty slot")]
+    fn test_receiver_slot_take_panics_on_empty() {
+        let slot = ReceiverSlot::new();
+        let _ = slot.take(); // should panic
+    }
+
+    #[test]
+    fn test_receiver_slot_clone_shares_state() {
+        let (_senders, receivers) =
+            crate::datafusion::distributor_channels::channels::<RecordBatch>(1);
+
+        let slot = ReceiverSlot::new();
+        let slot_clone = slot.clone();
+
+        // Inject via the original
+        slot.inject(receivers.into_iter().next().unwrap()).unwrap();
+
+        // Take from the clone — they share the same Arc<Mutex<Option<...>>>
+        let _rx = slot_clone.take();
+
+        // Now both the original and clone see the slot as empty
+        // (injecting again should succeed since we took the value out)
+        let (_senders2, receivers2) =
+            crate::datafusion::distributor_channels::channels::<RecordBatch>(1);
+        assert!(slot.inject(receivers2.into_iter().next().unwrap()).is_ok());
+    }
+
+    // =========================================================================
+    // EntityTableProvider tests
+    // =========================================================================
 
     #[test]
     fn test_entity_table_provider_creation() {
@@ -390,6 +427,70 @@ mod tests {
         assert_eq!(provider.schema().fields().len(), 3);
         assert!(provider.drain_pending_slots().is_empty());
     }
+
+    #[tokio::test]
+    async fn test_entity_scan_creates_pending_slot() {
+        let schema = make_test_schema();
+        let provider = EntityTableProvider::new(schema, Arc::from("TestEntity"));
+        let ctx = SessionContext::new();
+
+        // No slots before scan
+        assert!(provider.drain_pending_slots().is_empty());
+
+        // scan() should create exactly one pending slot
+        let _plan = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan");
+        let slots = provider.drain_pending_slots();
+        assert_eq!(slots.len(), 1, "scan() should create one pending slot");
+    }
+
+    #[tokio::test]
+    async fn test_entity_multiple_scans_accumulate_slots() {
+        let schema = make_test_schema();
+        let provider = EntityTableProvider::new(schema, Arc::from("TestEntity"));
+        let ctx = SessionContext::new();
+
+        let _plan1 = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan 1");
+        let _plan2 = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan 2");
+        let _plan3 = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan 3");
+
+        let slots = provider.drain_pending_slots();
+        assert_eq!(slots.len(), 3, "three scans should create three pending slots");
+    }
+
+    #[tokio::test]
+    async fn test_entity_drain_clears_slots() {
+        let schema = make_test_schema();
+        let provider = EntityTableProvider::new(schema, Arc::from("TestEntity"));
+        let ctx = SessionContext::new();
+
+        let _plan = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan");
+        assert_eq!(provider.drain_pending_slots().len(), 1);
+
+        // Second drain should be empty
+        assert!(
+            provider.drain_pending_slots().is_empty(),
+            "drain should clear the slots"
+        );
+    }
+
+    // =========================================================================
+    // EventTableProvider tests
+    // =========================================================================
 
     #[test]
     fn test_event_table_provider_creation() {
@@ -402,6 +503,47 @@ mod tests {
         assert!(provider.schema().field_with_name("tick").is_ok());
         assert!(provider.drain_pending_slots().is_empty());
     }
+
+    #[tokio::test]
+    async fn test_event_scan_creates_pending_slot() {
+        use crate::events::{EventType, event_schema};
+
+        let schema = event_schema("DamageEvent").expect("DamageEvent schema");
+        let provider = EventTableProvider::new(EventType::Damage, schema);
+        let ctx = SessionContext::new();
+
+        let _plan = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan");
+        let slots = provider.drain_pending_slots();
+        assert_eq!(slots.len(), 1, "scan() should create one pending slot");
+    }
+
+    #[tokio::test]
+    async fn test_event_multiple_scans_accumulate_slots() {
+        use crate::events::{EventType, event_schema};
+
+        let schema = event_schema("DamageEvent").expect("DamageEvent schema");
+        let provider = EventTableProvider::new(EventType::Damage, schema);
+        let ctx = SessionContext::new();
+
+        let _plan1 = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan 1");
+        let _plan2 = provider
+            .scan(&ctx.state(), None, &[], None)
+            .await
+            .expect("scan 2");
+
+        let slots = provider.drain_pending_slots();
+        assert_eq!(slots.len(), 2, "two scans should create two pending slots");
+    }
+
+    // =========================================================================
+    // Tick ordering tests
+    // =========================================================================
 
     #[tokio::test]
     async fn test_tick_ordering_included() {
@@ -424,6 +566,20 @@ mod tests {
             ordering.len(),
             0,
             "Should not have tick ordering when tick not in projection"
+        );
+    }
+
+    #[test]
+    fn test_tick_ordering_no_tick_column() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("entity_index", DataType::Int32, false),
+            Field::new("value", DataType::Float64, true),
+        ]));
+        let ordering = build_tick_ordering(&schema, None);
+        assert_eq!(
+            ordering.len(),
+            0,
+            "Should not have tick ordering when schema has no tick column"
         );
     }
 }

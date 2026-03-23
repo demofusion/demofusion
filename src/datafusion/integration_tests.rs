@@ -464,6 +464,299 @@ mod tests {
         assert_monotonic_ticks(&batches);
     }
 
+    // =========================================================================
+    // Multi-Query Tests (require demo file)
+    //
+    // These test that multiple queries registered via add_query() all receive
+    // correct data when drained concurrently. This exercises the
+    // drain_pending_slots -> distribution channel -> ReceiverSlot wiring.
+    // =========================================================================
+
+    /// Two queries on different entity tables, drained concurrently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_multi_query_different_entity_tables() {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
+        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+
+        let mut h1 = session
+            .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100")
+            .await
+            .expect("add_query 1");
+        let mut h2 = session
+            .add_query("SELECT tick, entity_index FROM CCitadelPlayerController LIMIT 50")
+            .await
+            .expect("add_query 2");
+
+        let _result = session.start().expect("start");
+
+        let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let f1 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h1.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f2 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h2.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            tokio::join!(f1, f2)
+        })
+        .await
+        .expect("multi-query should complete within 30s");
+
+        assert_eq!(total_rows(&r1), 100, "pawn query should return 100 rows");
+        assert_eq!(
+            total_rows(&r2),
+            50,
+            "controller query should return 50 rows"
+        );
+        assert_monotonic_ticks(&r1);
+        assert_monotonic_ticks(&r2);
+    }
+
+    /// Two queries on the same entity table (different filters).
+    /// This creates two ReceiverSlots on the same provider — the provider's
+    /// data must be broadcast to both.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_multi_query_same_entity_table() {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
+        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+
+        let mut h1 = session
+            .add_query(
+                "SELECT tick, entity_index FROM CCitadelPlayerPawn \
+                 WHERE entity_index = 65 LIMIT 20",
+            )
+            .await
+            .expect("add_query 1");
+        let mut h2 = session
+            .add_query(
+                "SELECT tick, entity_index FROM CCitadelPlayerPawn \
+                 WHERE entity_index = 72 LIMIT 20",
+            )
+            .await
+            .expect("add_query 2");
+
+        let _result = session.start().expect("start");
+
+        let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let f1 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h1.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f2 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h2.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            tokio::join!(f1, f2)
+        })
+        .await
+        .expect("multi-query same table should complete within 30s");
+
+        assert_eq!(total_rows(&r1), 20, "filter entity_index=65 should return 20 rows");
+        assert_eq!(total_rows(&r2), 20, "filter entity_index=72 should return 20 rows");
+
+        let indices_1 = extract_i32_column(&r1, "entity_index");
+        let indices_2 = extract_i32_column(&r2, "entity_index");
+        assert!(
+            indices_1.iter().all(|&i| i == 65),
+            "query 1 should only contain entity_index=65"
+        );
+        assert!(
+            indices_2.iter().all(|&i| i == 72),
+            "query 2 should only contain entity_index=72"
+        );
+    }
+
+    /// Two queries on different event tables, drained concurrently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_multi_query_different_event_tables() {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
+        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+
+        let mut h1 = session
+            .add_query("SELECT tick, damage FROM DamageEvent LIMIT 100")
+            .await
+            .expect("add_query 1");
+        let mut h2 = session
+            .add_query("SELECT tick, entindex_victim FROM HeroKilledEvent LIMIT 20")
+            .await
+            .expect("add_query 2");
+
+        let _result = session.start().expect("start");
+
+        let (r1, r2) = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+            let f1 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h1.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f2 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h2.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            tokio::join!(f1, f2)
+        })
+        .await
+        .expect("multi-query events should complete within 60s");
+
+        assert_eq!(total_rows(&r1), 100, "damage query should return 100 rows");
+        assert_eq!(
+            total_rows(&r2),
+            20,
+            "hero killed query should return 20 rows (got {})",
+            total_rows(&r2),
+        );
+        assert_monotonic_ticks(&r1);
+        assert_monotonic_ticks(&r2);
+    }
+
+    /// Mixed: one entity query + one event query, drained concurrently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_multi_query_entity_and_event() {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
+        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+
+        let mut h_entity = session
+            .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 100")
+            .await
+            .expect("add entity query");
+        let mut h_event = session
+            .add_query("SELECT tick, damage FROM DamageEvent LIMIT 50")
+            .await
+            .expect("add event query");
+
+        let _result = session.start().expect("start");
+
+        let (r_entity, r_event) =
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                let f1 = async {
+                    let mut batches = Vec::new();
+                    while let Some(result) = h_entity.next().await {
+                        batches.push(result.expect("batch"));
+                    }
+                    batches
+                };
+                let f2 = async {
+                    let mut batches = Vec::new();
+                    while let Some(result) = h_event.next().await {
+                        batches.push(result.expect("batch"));
+                    }
+                    batches
+                };
+                tokio::join!(f1, f2)
+            })
+            .await
+            .expect("mixed multi-query should complete within 30s");
+
+        assert_eq!(
+            total_rows(&r_entity),
+            100,
+            "entity query should return 100 rows"
+        );
+        assert_eq!(
+            total_rows(&r_event),
+            50,
+            "event query should return 50 rows"
+        );
+
+        // Verify correct schemas came back
+        assert!(
+            r_entity[0].schema().field_with_name("entity_index").is_ok(),
+            "entity result should have entity_index"
+        );
+        assert!(
+            r_event[0].schema().field_with_name("damage").is_ok(),
+            "event result should have damage"
+        );
+    }
+
+    /// Three queries: two on the same entity table + one event table.
+    /// Exercises broadcast (same table, multiple slots) and mixed types simultaneously.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "requires test demo file"]
+    async fn test_multi_query_three_queries_mixed() {
+        let source = DemoSource::from_bytes(load_demo_bytes().await);
+        let (mut session, _schemas) = source.into_session().await.expect("into_session");
+
+        let mut h1 = session
+            .add_query("SELECT tick, entity_index FROM CCitadelPlayerPawn LIMIT 50")
+            .await
+            .expect("add_query 1");
+        let mut h2 = session
+            .add_query(
+                "SELECT tick, entity_index FROM CCitadelPlayerPawn \
+                 WHERE entity_index = 65 LIMIT 10",
+            )
+            .await
+            .expect("add_query 2");
+        let mut h3 = session
+            .add_query("SELECT tick, damage FROM DamageEvent LIMIT 30")
+            .await
+            .expect("add_query 3");
+
+        let _result = session.start().expect("start");
+
+        let (r1, r2, r3) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let f1 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h1.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f2 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h2.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            let f3 = async {
+                let mut batches = Vec::new();
+                while let Some(result) = h3.next().await {
+                    batches.push(result.expect("batch"));
+                }
+                batches
+            };
+            tokio::join!(f1, f2, f3)
+        })
+        .await
+        .expect("three-query mix should complete within 30s");
+
+        assert_eq!(total_rows(&r1), 50, "pawn query should return 50 rows");
+        assert_eq!(
+            total_rows(&r2),
+            10,
+            "filtered pawn query should return 10 rows"
+        );
+        assert_eq!(
+            total_rows(&r3),
+            30,
+            "damage event query should return 30 rows"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[ignore = "requires test demo file"]
     async fn test_aggregation_rejected() {
