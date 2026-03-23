@@ -21,9 +21,7 @@ mod tests {
     use futures::StreamExt;
 
     use crate::datafusion::pipeline_analysis::analyze_pipeline;
-    use crate::datafusion::table_providers::{
-        EntityTableProvider, EventTableProvider, new_receiver_slot,
-    };
+    use crate::datafusion::table_providers::{EntityTableProvider, EventTableProvider};
     use crate::demo::DemoSource;
     use crate::events::{EventType, event_schema};
     use crate::session::IntoStreamingSession;
@@ -155,11 +153,11 @@ mod tests {
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
+            EventTableProvider::new(EventType::Damage, damage_schema);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
         let kill_provider =
-            EventTableProvider::new(EventType::HeroKilled, kill_schema, new_receiver_slot());
+            EventTableProvider::new(EventType::HeroKilled, kill_schema);
 
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
@@ -204,11 +202,11 @@ mod tests {
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
+            EventTableProvider::new(EventType::Damage, damage_schema);
 
         let kill_schema = event_schema("HeroKilledEvent").expect("kill schema");
         let kill_provider =
-            EventTableProvider::new(EventType::HeroKilled, kill_schema, new_receiver_slot());
+            EventTableProvider::new(EventType::HeroKilled, kill_schema);
 
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
@@ -245,7 +243,7 @@ mod tests {
 
         let damage_schema = event_schema("DamageEvent").expect("damage schema");
         let damage_provider =
-            EventTableProvider::new(EventType::Damage, damage_schema, new_receiver_slot());
+            EventTableProvider::new(EventType::Damage, damage_schema);
         ctx.register_table("DamageEvent", Arc::new(damage_provider))
             .unwrap();
 
@@ -264,7 +262,6 @@ mod tests {
         let entity_provider = EntityTableProvider::new(
             Arc::new(entity_schema),
             Arc::from("CCitadelPlayerPawn"),
-            new_receiver_slot(),
         );
         ctx.register_table("CCitadelPlayerPawn", Arc::new(entity_provider))
             .unwrap();

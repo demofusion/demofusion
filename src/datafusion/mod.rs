@@ -15,6 +15,4 @@ pub use pipeline_analysis::{
     PipelineAnalysis, PipelineBreaker, analyze_pipeline, format_plan_tree,
 };
 pub use streaming_stats::{StreamingStats, StreamingStatsSnapshot};
-pub use table_providers::{
-    EntityTableProvider, EventTableProvider, ReceiverSlot, new_receiver_slot,
-};
+pub use table_providers::{EntityTableProvider, EventTableProvider, ReceiverSlot};

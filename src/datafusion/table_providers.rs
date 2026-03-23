@@ -31,13 +31,42 @@ use crate::events::EventType;
 
 pub type BatchReceiver = DistributionReceiver<RecordBatch>;
 
-/// Slot for passing a receiver to the partition stream.
-/// Uses Mutex<Option<...>> so ownership can be taken exactly once in execute().
-pub type ReceiverSlot = Arc<Mutex<Option<BatchReceiver>>>;
+/// Shared slot for injecting a distribution channel receiver into a PartitionStream.
+///
+/// Created empty by `scan()` and stored in both the provider's `pending_slots`
+/// and the `PartitionStream`. At `start()` time, the session injects a receiver
+/// via [`inject()`](ReceiverSlot::inject). When DataFusion executes the plan,
+/// the `PartitionStream` takes ownership via [`take()`](ReceiverSlot::take).
+///
+/// Clone is cheap — it bumps the `Arc` reference count so both the provider
+/// and the `PartitionStream` share the same underlying slot.
+#[derive(Clone)]
+pub struct ReceiverSlot(Arc<Mutex<Option<BatchReceiver>>>);
 
-/// Creates a new empty receiver slot.
-pub fn new_receiver_slot() -> ReceiverSlot {
-    Arc::new(Mutex::new(None))
+impl ReceiverSlot {
+    /// Creates a new empty slot with no receiver.
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(None)))
+    }
+
+    /// Injects a receiver into the slot. Returns `Err` if the slot was already filled.
+    pub fn inject(&self, receiver: BatchReceiver) -> Result<(), &'static str> {
+        let mut guard = self.0.lock();
+        if guard.is_some() {
+            return Err("slot already filled");
+        }
+        *guard = Some(receiver);
+        Ok(())
+    }
+
+    /// Takes the receiver out of the slot, leaving it empty.
+    /// Panics if the slot is empty (execute called before inject, or called twice).
+    pub fn take(&self) -> BatchReceiver {
+        self.0
+            .lock()
+            .take()
+            .expect("ReceiverSlot::take() called on empty slot — inject() not called or take() called twice")
+    }
 }
 
 fn build_tick_ordering(schema: &SchemaRef, projection: Option<&Vec<usize>>) -> Vec<LexOrdering> {
@@ -82,7 +111,7 @@ fn build_tick_ordering(schema: &SchemaRef, projection: Option<&Vec<usize>>) -> V
 pub struct EntityTableProvider {
     schema: SchemaRef,
     entity_type: Arc<str>,
-    pending_slots: Arc<Mutex<Vec<ReceiverSlot>>>,
+    pending_slots: Mutex<Vec<ReceiverSlot>>,
 }
 
 impl EntityTableProvider {
@@ -90,7 +119,7 @@ impl EntityTableProvider {
         Self {
             schema,
             entity_type,
-            pending_slots: Arc::new(Mutex::new(Vec::new())),
+            pending_slots: Mutex::new(Vec::new()),
         }
     }
 
@@ -138,7 +167,7 @@ impl TableProvider for EntityTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        let slot = new_receiver_slot();
+        let slot = ReceiverSlot::new();
         self.pending_slots.lock().push(slot.clone());
 
         let partition_stream = EntityPartitionStream {
@@ -193,9 +222,7 @@ impl PartitionStream for EntityPartitionStream {
     }
 
     fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        let receiver = self.receiver_slot.lock().take().expect(
-            "Receiver slot empty - execute() called before slot was filled or called twice",
-        );
+        let receiver = self.receiver_slot.take();
 
         Box::pin(DistributionReceiverStream::new(
             self.schema.clone(),
@@ -216,7 +243,7 @@ impl PartitionStream for EntityPartitionStream {
 pub struct EventTableProvider {
     event_type: EventType,
     schema: SchemaRef,
-    pending_slots: Arc<Mutex<Vec<ReceiverSlot>>>,
+    pending_slots: Mutex<Vec<ReceiverSlot>>,
 }
 
 impl EventTableProvider {
@@ -224,7 +251,7 @@ impl EventTableProvider {
         Self {
             event_type,
             schema,
-            pending_slots: Arc::new(Mutex::new(Vec::new())),
+            pending_slots: Mutex::new(Vec::new()),
         }
     }
 
@@ -272,7 +299,7 @@ impl TableProvider for EventTableProvider {
         _filters: &[Expr],
         limit: Option<usize>,
     ) -> DfResult<Arc<dyn ExecutionPlan>> {
-        let slot = new_receiver_slot();
+        let slot = ReceiverSlot::new();
         self.pending_slots.lock().push(slot.clone());
 
         let partition_stream = EventPartitionStream {
@@ -332,9 +359,7 @@ impl PartitionStream for EventPartitionStream {
             event_type = ?self.event_type,
             "EventPartitionStream::execute called"
         );
-        let receiver = self.receiver_slot.lock().take().expect(
-            "Event receiver slot empty - execute() called before slot was filled or called twice",
-        );
+        let receiver = self.receiver_slot.take();
 
         Box::pin(DistributionReceiverStream::new(
             self.schema.clone(),
