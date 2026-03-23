@@ -347,16 +347,46 @@ impl StreamingSession {
         self
     }
 
+    /// Iterate over all entity schemas (excludes event schemas).
     pub fn schemas(&self) -> impl Iterator<Item = &EntitySchema> {
         self.entity_schemas.values()
     }
 
+    /// Look up an entity schema by table name.
     pub fn schema(&self, name: &str) -> Option<&EntitySchema> {
         self.entity_schemas.get(name)
     }
 
+    /// Return all entity table names.
     pub fn entity_names(&self) -> Vec<&str> {
         self.entity_schemas.keys().map(|s| &**s).collect()
+    }
+
+    /// Return all event table names.
+    pub fn event_names(&self) -> Vec<&str> {
+        self.event_providers.keys().map(|s| &**s).collect()
+    }
+
+    /// Return all table names (entity + event).
+    pub fn all_table_names(&self) -> Vec<&str> {
+        self.entity_schemas
+            .keys()
+            .chain(self.event_providers.keys())
+            .map(|s| &**s)
+            .collect()
+    }
+
+    /// Look up an Arrow schema for any table (entity or event).
+    pub fn get_table_schema(&self, name: &str) -> Option<SchemaRef> {
+        // Check entity schemas first
+        if let Some(entity_schema) = self.entity_schemas.get(name) {
+            return Some(entity_schema.arrow_schema.clone());
+        }
+        // Then check event providers
+        if let Some(event_provider) = self.event_providers.get(name) {
+            return Some(event_provider.arrow_schema());
+        }
+        None
     }
 
     pub async fn add_query(&mut self, sql: &str) -> Result<QueryHandle, SessionError> {
