@@ -260,6 +260,11 @@ impl EventTableProvider {
         self.event_type
     }
 
+    /// Returns the Arrow schema for this event table.
+    pub fn arrow_schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
     /// Drain all pending receiver slots created by `scan()` calls.
     ///
     /// Called by the session at `start()` time to discover which tables were

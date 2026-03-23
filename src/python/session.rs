@@ -41,7 +41,8 @@ impl PyStreamingSession {
 
 #[pymethods]
 impl PyStreamingSession {
-    /// Get all available entity table schemas as a dictionary mapping table name to PyArrow Schema.
+    /// Get all available table schemas as a dictionary mapping table name to PyArrow Schema.
+    /// Includes both entity tables (from demo schema discovery) and event tables (compile-time).
     #[getter]
     fn schemas(&self, py: Python<'_>) -> PyResult<PyObject> {
         let guard = self.inner.blocking_lock();
@@ -49,31 +50,39 @@ impl PyStreamingSession {
             DemofusionSessionError::new_err("Session has been closed")
         })?;
         let dict = pyo3::types::PyDict::new_bound(py);
+        // Entity schemas
         for entity_schema in session.schemas() {
             let py_schema = schema_to_pyarrow(py, &entity_schema.arrow_schema)?;
             dict.set_item(entity_schema.serializer_name.as_ref(), py_schema)?;
         }
+        // Event schemas
+        for name in session.event_names() {
+            if let Some(arrow_schema) = session.get_table_schema(name) {
+                let py_schema = schema_to_pyarrow(py, &arrow_schema)?;
+                dict.set_item(name, py_schema)?;
+            }
+        }
         Ok(dict.into())
     }
 
-    /// List all available table names.
+    /// List all available table names (entity + event).
     fn get_tables(&self) -> PyResult<Vec<String>> {
         let guard = self.inner.blocking_lock();
         let session = guard.as_ref().ok_or_else(|| {
             DemofusionSessionError::new_err("Session has been closed")
         })?;
-        Ok(session.entity_names().into_iter().map(|s| s.to_string()).collect())
+        Ok(session.all_table_names().into_iter().map(|s| s.to_string()).collect())
     }
 
-    /// Get PyArrow schema for a specific table (returns None if not found).
+    /// Get PyArrow schema for a specific table (entity or event). Returns None if not found.
     fn get_schema(&self, py: Python<'_>, table_name: &str) -> PyResult<Option<PyObject>> {
         let guard = self.inner.blocking_lock();
         let session = guard.as_ref().ok_or_else(|| {
             DemofusionSessionError::new_err("Session has been closed")
         })?;
-        match session.schema(table_name) {
-            Some(entity_schema) => {
-                let py_schema = schema_to_pyarrow(py, &entity_schema.arrow_schema)?;
+        match session.get_table_schema(table_name) {
+            Some(arrow_schema) => {
+                let py_schema = schema_to_pyarrow(py, &arrow_schema)?;
                 Ok(Some(py_schema))
             }
             None => Ok(None),
