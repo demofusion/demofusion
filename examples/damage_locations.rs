@@ -63,7 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let demo_bytes = tokio::fs::read(demo_path).await?;
 
     let source = DemoSource::from_bytes(demo_bytes);
-    let (mut session, _schemas) = source.into_session().await?;
+    let mut session = source.into_session().await?;
 
     println!("Analyzing damage locations via JOIN query...\n");
     println!("Query:\n{}\n", QUERY.trim());

@@ -181,9 +181,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let demo_bytes = tokio::fs::read(demo_path).await?;
 
     let source = DemoSource::from_bytes(demo_bytes);
-    let (mut session, schemas) = source.into_session().await?;
+    let mut session = source.into_session().await?;
 
-    println!("Loaded demo, {} entity tables available", schemas.len());
+    println!("Loaded demo, {} entity tables available", session.schemas().count());
 
     let guardian_query = session.add_query(GUARDIAN_QUERY).await?;
     let walker_query = session.add_query(WALKER_QUERY).await?;
