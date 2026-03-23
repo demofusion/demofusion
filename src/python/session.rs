@@ -156,6 +156,7 @@ impl PyStreamingSession {
     }
 
     /// Exit async context manager (cleanup resources).
+    #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
     fn __aexit__(
         &mut self,
         _exc_type: Option<&Bound<'_, PyAny>>,
