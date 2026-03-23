@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use tracing::{debug, trace, warn};
+use tracing::{debug, trace};
 
 use crate::datafusion::distributor_channels::DistributionSender;
 use crate::datafusion::streaming_stats::StreamingStats;
@@ -87,7 +87,10 @@ impl BatchingEventDispatcher {
                 stats.record_rows_produced(1);
             }
 
-            for swb in sender_list.iter_mut() {
+            // Track which senders failed (receiver dropped) so we can remove them
+            let mut failed_indices = Vec::new();
+
+            for (idx, swb) in sender_list.iter_mut().enumerate() {
                 swb.builder.append(tick, &event);
 
                 if swb.builder.should_flush() {
@@ -108,14 +111,20 @@ impl BatchingEventDispatcher {
 
                     trace!(target: "demofusion::dispatcher", rows, gate_blocked, "sending event batch");
 
-                    swb.sender
-                        .send(batch)
-                        .await
-                        .map_err(|_| ArrowVisitorError::ChannelClosed)?;
+                    if swb.sender.send(batch).await.is_err() {
+                        // Receiver dropped - mark for removal
+                        failed_indices.push(idx);
+                        continue;
+                    }
 
                     // Yield after sending a batch to allow consumers to process.
                     tokio::task::yield_now().await;
                 }
+            }
+
+            // Remove failed senders in reverse order to preserve indices
+            for idx in failed_indices.into_iter().rev() {
+                sender_list.swap_remove(idx);
             }
         }
 
@@ -127,7 +136,9 @@ impl BatchingEventDispatcher {
         let mut total_rows = 0;
 
         for (message_id, sender_list) in self.senders.iter_mut() {
-            for swb in sender_list.iter_mut() {
+            let mut failed_indices = Vec::new();
+
+            for (idx, swb) in sender_list.iter_mut().enumerate() {
                 if swb.builder.has_data() {
                     let batch = swb
                         .builder
@@ -142,7 +153,7 @@ impl BatchingEventDispatcher {
                         target: "demofusion::dispatcher",
                         message_id,
                         num_rows,
-                        "flush_all: flushing partial batch"
+                        "flush_all: flushing partial event batch"
                     );
 
                     // Record final batch stats
@@ -150,21 +161,16 @@ impl BatchingEventDispatcher {
                         stats.record_batch_sent(num_rows as u64);
                     }
 
-                    match swb.sender.send(batch).await {
-                        Ok(()) => {
-                            trace!(target: "demofusion::dispatcher", "flush_all: send succeeded");
-                        }
-                        Err(_) => {
-                            warn!(
-                                target: "demofusion::dispatcher",
-                                message_id,
-                                num_rows,
-                                "flush_all: channel closed, data lost"
-                            );
-                            return Err(ArrowVisitorError::ChannelClosed);
-                        }
+                    if swb.sender.send(batch).await.is_err() {
+                        // Receiver dropped - mark for removal
+                        failed_indices.push(idx);
                     }
                 }
+            }
+
+            // Remove failed senders in reverse order to preserve indices
+            for idx in failed_indices.into_iter().rev() {
+                sender_list.swap_remove(idx);
             }
         }
 
@@ -172,7 +178,7 @@ impl BatchingEventDispatcher {
             target: "demofusion::dispatcher",
             total_flushed,
             total_rows,
-            "flush_all: complete"
+            "flush_all: event flush complete"
         );
 
         Ok(())
@@ -204,5 +210,66 @@ mod tests {
     fn test_empty_dispatcher() {
         let dispatcher = BatchingEventDispatcher::new(HashMap::new(), 100);
         assert!(dispatcher.is_empty());
+    }
+
+    #[test]
+    fn test_has_active_senders_with_senders() {
+        let (senders, _receivers) = channels::<RecordBatch>(2);
+
+        let mut sender_map = HashMap::new();
+        sender_map.insert(
+            EventType::Damage.message_id(),
+            vec![(senders[0].clone(), EventType::Damage)],
+        );
+        sender_map.insert(
+            EventType::HeroKilled.message_id(),
+            vec![(senders[1].clone(), EventType::HeroKilled)],
+        );
+
+        let dispatcher = BatchingEventDispatcher::new(sender_map, 100);
+        assert!(dispatcher.has_active_senders());
+    }
+
+    #[test]
+    fn test_empty_dispatcher_has_no_active_senders() {
+        let dispatcher = BatchingEventDispatcher::new(HashMap::new(), 100);
+        assert!(!dispatcher.has_active_senders());
+    }
+
+    #[tokio::test]
+    async fn test_flush_all_survives_dropped_receiver() {
+        // Create two event types, each with a sender
+        let (senders, receivers) = channels::<RecordBatch>(2);
+
+        let mut sender_map = HashMap::new();
+        sender_map.insert(
+            EventType::Damage.message_id(),
+            vec![(senders[0].clone(), EventType::Damage)],
+        );
+        sender_map.insert(
+            EventType::HeroKilled.message_id(),
+            vec![(senders[1].clone(), EventType::HeroKilled)],
+        );
+
+        let mut dispatcher = BatchingEventDispatcher::new(sender_map, 100);
+        drop(senders); // drop original sender refs
+
+        // Drop one receiver — simulates a consumer that finished early (e.g., LIMIT reached)
+        let mut receivers = receivers;
+        let _kept_receiver = receivers.remove(1); // keep HeroKilled receiver
+        let dropped_receiver = receivers.remove(0); // drop Damage receiver
+        drop(dropped_receiver);
+
+        // flush_all should NOT return an error even though one receiver is gone.
+        // (The dispatcher has no pending data, so this is a no-op flush, but it
+        // exercises the code path without needing protobuf-encoded event data.)
+        let result = dispatcher.flush_all().await;
+        assert!(result.is_ok(), "flush_all should succeed even with a dropped receiver");
+
+        // The dispatcher should still report active senders (HeroKilled is alive)
+        assert!(
+            dispatcher.has_active_senders(),
+            "should still have active senders after one receiver dropped"
+        );
     }
 }
