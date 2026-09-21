@@ -155,7 +155,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut sorted: Vec<_> = by_location.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    sorted.sort_by_key(|a| std::cmp::Reverse(a.1.0));
 
     println!("{:<20} {:>12} {:>10}", "Location", "Damage", "Events");
     println!("{}", "-".repeat(44));
@@ -173,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Top 5 Grid Cells by Damage ===\n");
     let mut grid_sorted: Vec<_> = hotspots.into_iter().collect();
-    grid_sorted.sort_by(|a, b| b.1.damage_dealt.cmp(&a.1.damage_dealt));
+    grid_sorted.sort_by_key(|a| std::cmp::Reverse(a.1.damage_dealt));
 
     println!("{:<12} {:>12} {:>10}", "Grid (x,y)", "Damage", "Events");
     println!("{}", "-".repeat(36));
