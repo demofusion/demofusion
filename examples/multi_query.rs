@@ -98,12 +98,10 @@ async fn process_heroes(mut query: QueryHandle, state: Arc<Mutex<GameState>>) {
                 "create" => {
                     state.heroes_alive.insert(entity_idx, team);
                 }
-                "delete" => {
-                    if state.heroes_alive.remove(&entity_idx).is_some() {
-                        *state.hero_deaths.entry(team).or_insert(0) += 1;
-                        let game_time = tick as f64 / 64.0;
-                        println!("[{:.1}s] HERO DEATH: {}", game_time, team);
-                    }
+                "delete" if state.heroes_alive.remove(&entity_idx).is_some() => {
+                    *state.hero_deaths.entry(team).or_insert(0) += 1;
+                    let game_time = tick as f64 / 64.0;
+                    println!("[{:.1}s] HERO DEATH: {}", game_time, team);
                 }
                 _ => {}
             }
