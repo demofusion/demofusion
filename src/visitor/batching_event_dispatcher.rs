@@ -8,9 +8,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace, warn};
 
 use crate::datafusion::distributor_channels::DistributionSender;
+use crate::datafusion::stream_fault::StreamFault;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::events::{EventBatchBuilder, EventType, decode_event};
 
@@ -21,9 +22,14 @@ struct SenderWithBuilder {
     builder: EventBatchBuilder,
     #[allow(dead_code)]
     event_type: EventType,
+    /// This channel's fault slot. Set when the batch builder fails so that the
+    /// consumer sees an error rather than a stream that simply stops.
+    fault: StreamFault,
 }
 
 pub struct BatchingEventDispatcher {
+    /// Packet types already reported as having no event table.
+    unmapped_seen: std::collections::HashSet<u32>,
     senders: HashMap<u32, Vec<SenderWithBuilder>>,
     _batch_size: usize,
     stats: Option<Arc<StreamingStats>>,
@@ -31,14 +37,14 @@ pub struct BatchingEventDispatcher {
 
 impl BatchingEventDispatcher {
     pub fn new(
-        senders: HashMap<u32, Vec<(DistributionSender<RecordBatch>, EventType)>>,
+        senders: HashMap<u32, Vec<(DistributionSender<RecordBatch>, EventType, StreamFault)>>,
         batch_size: usize,
     ) -> Self {
         Self::new_with_stats(senders, batch_size, None)
     }
 
     pub fn new_with_stats(
-        senders: HashMap<u32, Vec<(DistributionSender<RecordBatch>, EventType)>>,
+        senders: HashMap<u32, Vec<(DistributionSender<RecordBatch>, EventType, StreamFault)>>,
         batch_size: usize,
         stats: Option<Arc<StreamingStats>>,
     ) -> Self {
@@ -47,10 +53,11 @@ impl BatchingEventDispatcher {
             .map(|(message_id, sender_list)| {
                 let senders_with_builders = sender_list
                     .into_iter()
-                    .map(|(sender, event_type)| SenderWithBuilder {
+                    .map(|(sender, event_type, fault)| SenderWithBuilder {
                         sender,
                         builder: EventBatchBuilder::new(event_type, batch_size),
                         event_type,
+                        fault,
                     })
                     .collect();
                 (message_id, senders_with_builders)
@@ -59,6 +66,7 @@ impl BatchingEventDispatcher {
 
         Self {
             senders,
+            unmapped_seen: std::collections::HashSet::new(),
             _batch_size: batch_size,
             stats,
         }
@@ -79,53 +87,88 @@ impl BatchingEventDispatcher {
         packet_type: u32,
         data: &[u8],
     ) -> Result<(), ArrowVisitorError> {
-        if let Some(sender_list) = self.senders.get_mut(&packet_type)
-            && let Some(event) = decode_event(packet_type, data)
-        {
-            // Record row production (once per event, not per sender)
-            if let Some(stats) = &self.stats {
-                stats.record_rows_produced(1);
+        // Two distinct silent-drop paths used to hide behind a single `if let`
+        // chain here: an unregistered packet type (expected — most packets are
+        // not events anyone asked for), and a registered one whose payload
+        // fails to decode (a bug, and indistinguishable from "the event never
+        // happened" without a log). Keep them apart, and report each unmapped
+        // type only once.
+        let Some(sender_list) = self.senders.get_mut(&packet_type) else {
+            if self.unmapped_seen.insert(packet_type) {
+                debug!(
+                    target: "demofusion::dispatcher",
+                    packet_type,
+                    "packet type has no registered event table"
+                );
             }
+            return Ok(());
+        };
 
-            // Track which senders failed (receiver dropped) so we can remove them
-            let mut failed_indices = Vec::new();
+        let Some(event) = decode_event(packet_type, data) else {
+            warn!(
+                target: "demofusion::dispatcher",
+                packet_type,
+                bytes = data.len(),
+                "event payload failed to decode; rows will be silently missing"
+            );
+            return Ok(());
+        };
 
-            for (idx, swb) in sender_list.iter_mut().enumerate() {
-                swb.builder.append(tick, &event);
+        // Record row production (once per event, not per sender)
+        if let Some(stats) = &self.stats {
+            stats.record_rows_produced(1);
+        }
 
-                if swb.builder.should_flush() {
-                    let batch = swb
-                        .builder
-                        .flush()
-                        .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
+        // Track which senders failed (receiver dropped) so we can remove them
+        let mut failed_indices = Vec::new();
 
-                    let rows = batch.num_rows();
-                    let gate_blocked = swb.sender.is_gate_blocked();
+        for (idx, swb) in sender_list.iter_mut().enumerate() {
+            swb.builder.append(tick, &event);
 
-                    if let Some(stats) = &self.stats {
-                        stats.record_batch_sent(rows as u64);
-                        if gate_blocked {
-                            stats.record_gate_blocked();
-                        }
-                    }
-
-                    trace!(target: "demofusion::dispatcher", rows, gate_blocked, "sending event batch");
-
-                    if swb.sender.send(batch).await.is_err() {
-                        // Receiver dropped - mark for removal
+            if swb.builder.should_flush() {
+                // A builder failure belongs to THIS channel only — see the
+                // matching comment in the entity dispatcher.
+                let batch = match swb.builder.flush() {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        error!(
+                            target: "demofusion::dispatcher",
+                            packet_type,
+                            error = %e,
+                            "event batch builder failed; failing this stream only"
+                        );
+                        swb.fault.set(format!("event batch builder failed: {e}"));
                         failed_indices.push(idx);
                         continue;
                     }
+                };
 
-                    // Yield after sending a batch to allow consumers to process.
-                    tokio::task::yield_now().await;
+                let rows = batch.num_rows();
+                let gate_blocked = swb.sender.is_gate_blocked();
+
+                if let Some(stats) = &self.stats {
+                    stats.record_batch_sent(rows as u64);
+                    if gate_blocked {
+                        stats.record_gate_blocked();
+                    }
                 }
-            }
 
-            // Remove failed senders in reverse order to preserve indices
-            for idx in failed_indices.into_iter().rev() {
-                sender_list.swap_remove(idx);
+                trace!(target: "demofusion::dispatcher", rows, gate_blocked, "sending event batch");
+
+                if swb.sender.send(batch).await.is_err() {
+                    // Receiver dropped - mark for removal
+                    failed_indices.push(idx);
+                    continue;
+                }
+
+                // Yield after sending a batch to allow consumers to process.
+                tokio::task::yield_now().await;
             }
+        }
+
+        // Remove failed senders in reverse order to preserve indices
+        for idx in failed_indices.into_iter().rev() {
+            sender_list.swap_remove(idx);
         }
 
         Ok(())
@@ -140,10 +183,20 @@ impl BatchingEventDispatcher {
 
             for (idx, swb) in sender_list.iter_mut().enumerate() {
                 if swb.builder.has_data() {
-                    let batch = swb
-                        .builder
-                        .flush()
-                        .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
+                    let batch = match swb.builder.flush() {
+                        Ok(batch) => batch,
+                        Err(e) => {
+                            error!(
+                                target: "demofusion::dispatcher",
+                                message_id,
+                                error = %e,
+                                "event batch builder failed on final flush; failing this stream only"
+                            );
+                            swb.fault.set(format!("event batch builder failed: {e}"));
+                            failed_indices.push(idx);
+                            continue;
+                        }
+                    };
 
                     let num_rows = batch.num_rows();
                     total_rows += num_rows;
@@ -198,7 +251,7 @@ mod tests {
         let mut sender_map = HashMap::new();
         sender_map.insert(
             EventType::Damage.message_id(),
-            vec![(senders[0].clone(), EventType::Damage)],
+            vec![(senders[0].clone(), EventType::Damage, StreamFault::new())],
         );
 
         let dispatcher = BatchingEventDispatcher::new(sender_map, 100);
@@ -219,11 +272,11 @@ mod tests {
         let mut sender_map = HashMap::new();
         sender_map.insert(
             EventType::Damage.message_id(),
-            vec![(senders[0].clone(), EventType::Damage)],
+            vec![(senders[0].clone(), EventType::Damage, StreamFault::new())],
         );
         sender_map.insert(
             EventType::HeroKilled.message_id(),
-            vec![(senders[1].clone(), EventType::HeroKilled)],
+            vec![(senders[1].clone(), EventType::HeroKilled, StreamFault::new())],
         );
 
         let dispatcher = BatchingEventDispatcher::new(sender_map, 100);
@@ -244,11 +297,11 @@ mod tests {
         let mut sender_map = HashMap::new();
         sender_map.insert(
             EventType::Damage.message_id(),
-            vec![(senders[0].clone(), EventType::Damage)],
+            vec![(senders[0].clone(), EventType::Damage, StreamFault::new())],
         );
         sender_map.insert(
             EventType::HeroKilled.message_id(),
-            vec![(senders[1].clone(), EventType::HeroKilled)],
+            vec![(senders[1].clone(), EventType::HeroKilled, StreamFault::new())],
         );
 
         let mut dispatcher = BatchingEventDispatcher::new(sender_map, 100);

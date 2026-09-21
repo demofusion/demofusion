@@ -27,6 +27,7 @@ use tracing::debug;
 
 use crate::datafusion::distribution_stream::DistributionReceiverStream;
 use crate::datafusion::distributor_channels::DistributionReceiver;
+use crate::datafusion::stream_fault::StreamFault;
 use crate::events::EventType;
 
 pub(crate) type BatchReceiver = DistributionReceiver<RecordBatch>;
@@ -40,8 +41,11 @@ pub(crate) type BatchReceiver = DistributionReceiver<RecordBatch>;
 ///
 /// Clone is cheap — it bumps the `Arc` reference count so both the provider
 /// and the `PartitionStream` share the same underlying slot.
+///
+/// The slot carries the channel's [`StreamFault`] alongside the receiver so the
+/// executing stream can tell a clean end-of-demo from a producer that died.
 #[derive(Clone)]
-pub struct ReceiverSlot(Arc<Mutex<Option<BatchReceiver>>>);
+pub struct ReceiverSlot(Arc<Mutex<Option<(BatchReceiver, StreamFault)>>>);
 
 impl Default for ReceiverSlot {
     fn default() -> Self {
@@ -55,19 +59,19 @@ impl ReceiverSlot {
         Self::default()
     }
 
-    /// Injects a receiver into the slot. Returns `Err` if the slot was already filled.
-    pub fn inject(&self, receiver: BatchReceiver) -> Result<(), &'static str> {
+    /// Injects a receiver and its fault slot. Returns `Err` if already filled.
+    pub fn inject(&self, receiver: BatchReceiver, fault: StreamFault) -> Result<(), &'static str> {
         let mut guard = self.0.lock();
         if guard.is_some() {
             return Err("slot already filled");
         }
-        *guard = Some(receiver);
+        *guard = Some((receiver, fault));
         Ok(())
     }
 
-    /// Takes the receiver out of the slot, leaving it empty.
+    /// Takes the receiver and fault out of the slot, leaving it empty.
     /// Panics if the slot is empty (execute called before inject, or called twice).
-    pub fn take(&self) -> BatchReceiver {
+    pub fn take(&self) -> (BatchReceiver, StreamFault) {
         self.0
             .lock()
             .take()
@@ -228,11 +232,12 @@ impl PartitionStream for EntityPartitionStream {
     }
 
     fn execute(&self, _ctx: Arc<TaskContext>) -> SendableRecordBatchStream {
-        let receiver = self.receiver_slot.take();
+        let (receiver, fault) = self.receiver_slot.take();
 
-        Box::pin(DistributionReceiverStream::new(
+        Box::pin(DistributionReceiverStream::with_fault(
             self.schema.clone(),
             receiver,
+            fault,
         ))
     }
 }
@@ -370,11 +375,12 @@ impl PartitionStream for EventPartitionStream {
             event_type = ?self.event_type,
             "EventPartitionStream::execute called"
         );
-        let receiver = self.receiver_slot.take();
+        let (receiver, fault) = self.receiver_slot.take();
 
-        Box::pin(DistributionReceiverStream::new(
+        Box::pin(DistributionReceiverStream::with_fault(
             self.schema.clone(),
             receiver,
+            fault,
         ))
     }
 }
@@ -413,16 +419,20 @@ mod tests {
         let slot_clone = slot.clone();
 
         // Inject via the original
-        slot.inject(receivers.into_iter().next().unwrap()).unwrap();
+        slot.inject(receivers.into_iter().next().unwrap(), StreamFault::new())
+            .unwrap();
 
         // Take from the clone — they share the same Arc<Mutex<Option<...>>>
-        let _rx = slot_clone.take();
+        let (_rx, _fault) = slot_clone.take();
 
         // Now both the original and clone see the slot as empty
         // (injecting again should succeed since we took the value out)
         let (_senders2, receivers2) =
             crate::datafusion::distributor_channels::channels::<RecordBatch>(1);
-        assert!(slot.inject(receivers2.into_iter().next().unwrap()).is_ok());
+        assert!(
+            slot.inject(receivers2.into_iter().next().unwrap(), StreamFault::new())
+                .is_ok()
+        );
     }
 
     // =========================================================================

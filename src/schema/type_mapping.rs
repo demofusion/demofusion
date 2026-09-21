@@ -111,7 +111,15 @@ pub fn parse_var_type(var_type: &str) -> FieldType {
             FieldType::Scalar(DataType::UInt64)
         }
 
-        "float32" | "float" | "GameTime_t" | "GameTick_t" => FieldType::Scalar(DataType::Float32),
+        // CNetworkedQuantizedFloat is a scalar float sent with reduced precision.
+        // It must be listed explicitly: its name matches the "starts with C,
+        // second char uppercase" heuristic below for nested serializer class
+        // names, so without this it is classified as Nested and then dropped by
+        // SchemaBuilder, which is what silently removed CBodyComponent.m_vecX/Y/Z
+        // (the sub-cell position offsets) from every entity schema.
+        "float32" | "float" | "GameTime_t" | "GameTick_t" | "CNetworkedQuantizedFloat" => {
+            FieldType::Scalar(DataType::Float32)
+        }
 
         "float64" | "double" => FieldType::Scalar(DataType::Float64),
 
@@ -143,6 +151,14 @@ pub fn parse_var_type(var_type: &str) -> FieldType {
             if var_type.starts_with('C')
                 && var_type.chars().nth(1).is_some_and(|c| c.is_uppercase())
             {
+                // A guess, not a fact: any scalar type whose name looks like a
+                // class name lands here and is then dropped from the schema.
+                // Logged so that a missing column is discoverable rather than
+                // silent.
+                tracing::debug!(
+                    var_type,
+                    "treating unrecognised type as a nested serializer; its                      columns will be omitted"
+                );
                 FieldType::Nested {
                     serializer_name: var_type.to_string(),
                 }
@@ -192,6 +208,24 @@ pub fn field_value_to_arrow_type(value: &FieldValue) -> DataType {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn quantized_float_is_not_a_nested_serializer() {
+        // CNetworkedQuantizedFloat is the declared type of CBodyComponent.m_vecX,
+        // the sub-cell position offset. It is a scalar float, but its name matches
+        // the "starts with C, second char uppercase" heuristic for nested
+        // serializer class names, so it was classified as Nested and then dropped
+        // by SchemaBuilder's `FieldType::Nested => continue`, silently removing
+        // m_vecX/Y/Z from every entity schema.
+        assert!(
+            matches!(
+                parse_var_type("CNetworkedQuantizedFloat"),
+                FieldType::Scalar(DataType::Float32)
+            ),
+            "CNetworkedQuantizedFloat must be a scalar f32, got {:?}",
+            parse_var_type("CNetworkedQuantizedFloat")
+        );
+    }
+
     use super::*;
 
     #[test]

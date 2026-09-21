@@ -79,6 +79,7 @@ use tracing::{debug, info, warn};
 
 use crate::datafusion::distributor_channels::{self, DistributionSender};
 use crate::datafusion::pipeline_analysis::analyze_pipeline;
+use crate::datafusion::stream_fault::StreamFault;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::datafusion::table_providers::{
     BatchReceiver, EntityTableProvider, EventTableProvider, ReceiverSlot,
@@ -88,6 +89,11 @@ use crate::haste::core::packet_source::PacketSource;
 use crate::schema::EntitySchema;
 
 type BatchSender = DistributionSender<RecordBatch>;
+
+/// One channel's producer side: the sender, its table binding, and the fault
+/// slot its consumer reads at end-of-stream.
+type EntitySenders = HashMap<u64, Vec<(BatchSender, EntitySchema, StreamFault)>>;
+type EventSenders = HashMap<u32, Vec<(BatchSender, EventType, StreamFault)>>;
 type ParserResult = (JoinHandle<Result<(), SessionError>>, Arc<StreamingStats>);
 
 pub(crate) type Schemas = HashMap<Arc<str>, EntitySchema>;
@@ -498,35 +504,45 @@ impl StreamingSession {
         let mut sender_iter = all_senders.into_iter();
         let mut receiver_idx = 0;
 
+        // One fault slot per channel. The producer end goes to the dispatcher
+        // (so a builder failure fails only its own stream); the consumer end
+        // rides in the ReceiverSlot so the executing stream can tell a clean
+        // end-of-demo from a truncated one. `all_faults` keeps every handle so
+        // a parse error — which corrupts the bit stream shared by all tables —
+        // can be reported on every channel at once.
+        let mut all_faults: Vec<StreamFault> = Vec::with_capacity(total_channels);
+
         // Wire up entity channels
-        let mut entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>> =
-            HashMap::new();
+        let mut entity_dispatcher_senders: EntitySenders = HashMap::new();
         let mut slot_receiver_pairs: Vec<(ReceiverSlot, usize)> = Vec::new();
 
         for (entity_name, slots) in &entity_slots {
             let schema = &self.entity_schemas[entity_name.as_ref()];
             for slot in slots {
                 let sender = sender_iter.next().expect("channel count mismatch");
+                let fault = StreamFault::new();
+                all_faults.push(fault.clone());
                 entity_dispatcher_senders
                     .entry(schema.serializer_hash)
                     .or_default()
-                    .push((sender, schema.clone()));
+                    .push((sender, schema.clone(), fault));
                 slot_receiver_pairs.push((slot.clone(), receiver_idx));
                 receiver_idx += 1;
             }
         }
 
         // Wire up event channels
-        let mut event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>> =
-            HashMap::new();
+        let mut event_dispatcher_senders: EventSenders = HashMap::new();
 
         for (event_type, slots) in &event_slots {
             for slot in slots {
                 let sender = sender_iter.next().expect("channel count mismatch");
+                let fault = StreamFault::new();
+                all_faults.push(fault.clone());
                 event_dispatcher_senders
                     .entry(event_type.message_id())
                     .or_default()
-                    .push((sender, *event_type));
+                    .push((sender, *event_type, fault));
                 slot_receiver_pairs.push((slot.clone(), receiver_idx));
                 receiver_idx += 1;
             }
@@ -547,7 +563,8 @@ impl StreamingSession {
             let rx = receivers_by_idx
                 .remove(&idx)
                 .expect("receiver index mismatch");
-            slot.inject(rx).map_err(|_| {
+            let fault = all_faults[idx].clone();
+            slot.inject(rx, fault).map_err(|_| {
                 SessionError::Internal("Slot already filled during start()".to_string())
             })?;
         }
@@ -565,6 +582,7 @@ impl StreamingSession {
             parser_schemas,
             entity_dispatcher_senders,
             event_dispatcher_senders,
+            all_faults,
             batch_size,
             stats_clone,
         );
@@ -578,8 +596,9 @@ impl StreamingSession {
         &self,
         source: PacketSourceKind,
         parser_schemas: Vec<(u64, EntitySchema)>,
-        entity_dispatcher_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
-        event_dispatcher_senders: HashMap<u32, Vec<(BatchSender, EventType)>>,
+        entity_dispatcher_senders: EntitySenders,
+        event_dispatcher_senders: EventSenders,
+        all_faults: Vec<StreamFault>,
         batch_size: usize,
         stats: Arc<StreamingStats>,
     ) -> JoinHandle<Result<(), SessionError>> {
@@ -591,6 +610,7 @@ impl StreamingSession {
                     parser_schemas,
                     entity_dispatcher_senders,
                     event_dispatcher_senders,
+                    all_faults,
                     batch_size,
                     stats,
                 ))
@@ -619,6 +639,7 @@ impl StreamingSession {
                     parser_schemas,
                     entity_dispatcher_senders,
                     event_dispatcher_senders,
+                    all_faults,
                     batch_size,
                     stats,
                 ))
@@ -667,11 +688,45 @@ impl PacketSource for ChunkedBytesSource {
     }
 }
 
+/// Classify the way `run_to_end` stopped.
+///
+/// `ArrowVisitorError::ChannelClosed` is not a failure: it is the visitor's
+/// own signal that every consumer has disconnected (every query hit its LIMIT,
+/// or the caller dropped its handles), so there is nobody left to parse for.
+/// Anything else means the parse died with data still owed to live consumers,
+/// and must be reported — the alternative is a stream that simply stops, which
+/// is indistinguishable from a demo that ended.
+fn classify_parse_stop(err: &anyhow::Error) -> Option<String> {
+    use crate::visitor::ArrowVisitorError;
+
+    if let Some(ArrowVisitorError::ChannelClosed) = err.downcast_ref::<ArrowVisitorError>() {
+        return None;
+    }
+    Some(format!("{err:#}"))
+}
+
+/// Record `reason` on every channel, then build the error the parser task
+/// reports. A parse error corrupts the bit stream every table is decoded from,
+/// so it belongs to all of them, not just the one being decoded when it hit.
+fn report_parse_fault(faults: &[StreamFault], reason: String) -> SessionError {
+    tracing::error!(
+        target: "demofusion::parser",
+        %reason,
+        channels = faults.len(),
+        "demo parse aborted; failing every live query stream"
+    );
+    for fault in faults {
+        fault.set(reason.clone());
+    }
+    SessionError::Parser(reason)
+}
+
 async fn run_parser_demo<P: PacketSource + 'static>(
     source: P,
     schemas: Vec<(u64, EntitySchema)>,
-    entity_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
-    event_senders: HashMap<u32, Vec<(BatchSender, EventType)>>,
+    entity_senders: EntitySenders,
+    event_senders: EventSenders,
+    all_faults: Vec<StreamFault>,
     batch_size: usize,
     stats: Arc<StreamingStats>,
 ) -> Result<(), SessionError> {
@@ -711,14 +766,26 @@ async fn run_parser_demo<P: PacketSource + 'static>(
         .map_err(|e| SessionError::Parser(e.to_string()))?;
 
     debug!(target: "demofusion::parser", "run_parser_demo: running parser to end");
-    let _ = parser.run_to_end().await;
+    let outcome = match parser.run_to_end().await {
+        Ok(()) => None,
+        Err(e) => classify_parse_stop(&e).map(|reason| report_parse_fault(&all_faults, reason)),
+    };
 
+    // Flush whatever is already batched even on a fault: the rows up to the
+    // failure are real, and the consumer gets them followed by the error.
     debug!(target: "demofusion::parser", "run_parser_demo: flushing remaining data");
     let mut visitor = parser.into_visitor();
-    let _ = visitor.flush_all().await;
+    if let Err(e) = visitor.flush_all().await {
+        warn!(target: "demofusion::parser", error = %e, "run_parser_demo: final flush failed");
+    }
 
-    info!(target: "demofusion::parser", "run_parser_demo: complete");
-    Ok(())
+    match outcome {
+        Some(err) => Err(err),
+        None => {
+            info!(target: "demofusion::parser", "run_parser_demo: complete");
+            Ok(())
+        }
+    }
 }
 
 #[cfg(feature = "gotv")]
@@ -726,8 +793,9 @@ async fn run_parser_broadcast(
     packet_rx: mpsc::Receiver<Bytes>,
     start_packet: Bytes,
     schemas: Vec<(u64, EntitySchema)>,
-    entity_senders: HashMap<u64, Vec<(BatchSender, EntitySchema)>>,
-    event_senders: HashMap<u32, Vec<(BatchSender, EventType)>>,
+    entity_senders: EntitySenders,
+    event_senders: EventSenders,
+    all_faults: Vec<StreamFault>,
     batch_size: usize,
     stats: Arc<StreamingStats>,
 ) -> Result<(), SessionError> {
@@ -759,12 +827,20 @@ async fn run_parser_broadcast(
     let mut parser = AsyncStreamingParser::from_stream_with_visitor(broadcast_stream, visitor)
         .map_err(|e| SessionError::Parser(e.to_string()))?;
 
-    let _ = parser.run_to_end().await;
+    let outcome = match parser.run_to_end().await {
+        Ok(()) => None,
+        Err(e) => classify_parse_stop(&e).map(|reason| report_parse_fault(&all_faults, reason)),
+    };
 
     let mut visitor = parser.into_visitor();
-    let _ = visitor.flush_all().await;
+    if let Err(e) = visitor.flush_all().await {
+        warn!(target: "demofusion::parser", error = %e, "run_parser_broadcast: final flush failed");
+    }
 
-    Ok(())
+    match outcome {
+        Some(err) => Err(err),
+        None => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -903,12 +979,12 @@ mod tests {
         let slot2 = ReceiverSlot::new();
 
         let mut rx_iter = receivers.into_iter();
-        slot1.inject(rx_iter.next().unwrap()).unwrap();
-        slot2.inject(rx_iter.next().unwrap()).unwrap();
+        slot1.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
+        slot2.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
 
         // Verify slots were filled by taking from them
-        let _rx1 = slot1.take();
-        let _rx2 = slot2.take();
+        let (_rx1, _f1) = slot1.take();
+        let (_rx2, _f2) = slot2.take();
 
         drop(senders);
     }
@@ -921,9 +997,62 @@ mod tests {
         let mut rx_iter = receivers.into_iter();
 
         let slot = ReceiverSlot::new();
-        slot.inject(rx_iter.next().unwrap()).unwrap();
+        slot.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
 
-        let result = slot.inject(rx_iter.next().unwrap());
+        let result = slot.inject(rx_iter.next().unwrap(), StreamFault::new());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_all_consumers_gone_is_not_a_parse_failure() {
+        // `ChannelClosed` is the visitor's own "nobody is listening any more"
+        // signal — every query hit its LIMIT, or the caller dropped its
+        // handles. Reporting it as a fault would turn correct, intentional
+        // early termination into a failure on every LIMIT query.
+        use crate::visitor::ArrowVisitorError;
+
+        let err = anyhow::Error::from(ArrowVisitorError::ChannelClosed);
+        assert_eq!(classify_parse_stop(&err), None);
+    }
+
+    #[test]
+    fn test_a_real_parse_error_is_classified_as_a_failure() {
+        // Anything that is not "all consumers are done" means the parse died
+        // owing data to live consumers.
+        let err = anyhow::anyhow!("field path not found");
+        let reason = classify_parse_stop(&err).expect("a decode error must be reported");
+        assert!(
+            reason.contains("field path not found"),
+            "the reason must survive classification, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn test_a_batch_error_from_the_visitor_is_also_a_failure() {
+        // ChannelClosed is the *only* exempt variant; a BatchError that
+        // escaped to the parser is a genuine fault.
+        use crate::visitor::ArrowVisitorError;
+
+        let err = anyhow::Error::from(ArrowVisitorError::BatchError("schema mismatch".into()));
+        assert!(classify_parse_stop(&err).is_some());
+    }
+
+    #[test]
+    fn test_a_parse_fault_is_recorded_on_every_channel() {
+        // A decode error corrupts the bit stream every table is read from, so
+        // it belongs to all of them — not only to whichever table happened to
+        // be decoding when it hit.
+        let faults: Vec<StreamFault> = (0..3).map(|_| StreamFault::new()).collect();
+
+        let err = report_parse_fault(&faults, "field path not found".to_string());
+
+        assert!(matches!(err, SessionError::Parser(_)));
+        for (i, fault) in faults.iter().enumerate() {
+            assert_eq!(
+                fault.get().as_deref(),
+                Some("field path not found"),
+                "channel {i} was left without a fault, so its stream would end silently"
+            );
+        }
     }
 }
