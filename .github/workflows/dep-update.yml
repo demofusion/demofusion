@@ -1,0 +1,52 @@
+name: Dependency Updates
+
+# Weekly check for upstream changes to pinned git dependencies
+# (valveprotos, dungers, ...). When upstream has moved, bumps the pinned
+# revs in Cargo.toml/Cargo.lock and opens a PR for review.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions: {}
+
+jobs:
+  update:
+    name: Check pinned git dependencies
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install protobuf compiler
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Check for upstream changes (and bump revs)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/check_git_deps.py --update --markdown
+
+      - name: Verify build with updated dependencies
+        run: cargo check --all-features
+
+      - name: Create PR if dependencies changed
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: deps/update-git-deps
+          delete-branch: true
+          title: "chore: bump pinned git dependencies"
+          body-path: scripts/deps-report.md
+          labels: dependencies
+          commit-message: "chore: bump pinned git dependency revs (valveprotos, dungers, ...)"

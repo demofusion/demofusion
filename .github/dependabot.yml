@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned to current majors
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
