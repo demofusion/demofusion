@@ -122,15 +122,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
                 "update" => {
-                    if let Some(node) = nodes.get_mut(&entity_idx) {
-                        if team != node.team {
-                            let old_team = node.team;
-                            node.team = team;
-                            println!(
-                                "[{:.1}s] Node {} flipped: {} lane, team {} -> {}",
-                                game_seconds, entity_idx, node.lane, old_team, team
-                            );
-                        }
+                    if let Some(node) = nodes.get_mut(&entity_idx)
+                        && team != node.team
+                    {
+                        let old_team = node.team;
+                        node.team = team;
+                        println!(
+                            "[{:.1}s] Node {} flipped: {} lane, team {} -> {}",
+                            game_seconds, entity_idx, node.lane, old_team, team
+                        );
                     }
                 }
                 _ => {}

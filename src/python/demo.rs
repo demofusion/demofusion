@@ -43,6 +43,7 @@ impl PyDemoSource {
     ///   batch_size: Number of rows per RecordBatch.
     ///   reject_pipeline_breakers: Whether to reject memory-intensive queries.
     #[pyo3(signature = (*, batch_size=None, reject_pipeline_breakers=None))]
+    #[allow(clippy::wrong_self_convention)]
     fn into_session<'py>(
         &self,
         py: Python<'py>,

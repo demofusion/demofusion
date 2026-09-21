@@ -119,8 +119,7 @@ impl BatchingEntityDispatcher {
                                 error = %e,
                                 "entity batch builder failed; failing this stream only"
                             );
-                            swb.fault
-                                .set(format!("entity batch builder failed: {e}"));
+                            swb.fault.set(format!("entity batch builder failed: {e}"));
                             failed_indices.push(idx);
                             continue;
                         }
@@ -174,8 +173,7 @@ impl BatchingEntityDispatcher {
                                 error = %e,
                                 "entity batch builder failed on final flush; failing this stream only"
                             );
-                            swb.fault
-                                .set(format!("entity batch builder failed: {e}"));
+                            swb.fault.set(format!("entity batch builder failed: {e}"));
                             failed_indices.push(idx);
                             continue;
                         }
@@ -233,7 +231,10 @@ mod tests {
         let schema = make_simple_entity_schema(12345);
 
         let mut sender_map = HashMap::new();
-        sender_map.insert(12345u64, vec![(senders[0].clone(), schema, StreamFault::new())]);
+        sender_map.insert(
+            12345u64,
+            vec![(senders[0].clone(), schema, StreamFault::new())],
+        );
 
         let dispatcher = BatchingEntityDispatcher::new(sender_map, 100);
 

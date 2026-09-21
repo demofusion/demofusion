@@ -1,5 +1,10 @@
 //! PyO3 Python bindings for demofusion.
 
+// pyo3 signatures of the form `PyResult<Bound<'py, PyAny>>` trip clippy's
+// useless_conversion lint on the return type; the suggested "removal" would
+// change the public API. These are pyo3 conventions, not real conversions.
+#![allow(clippy::useless_conversion)]
+
 pub mod arrow_convert;
 pub mod demo;
 pub mod exceptions;

@@ -276,7 +276,11 @@ mod tests {
         );
         sender_map.insert(
             EventType::HeroKilled.message_id(),
-            vec![(senders[1].clone(), EventType::HeroKilled, StreamFault::new())],
+            vec![(
+                senders[1].clone(),
+                EventType::HeroKilled,
+                StreamFault::new(),
+            )],
         );
 
         let dispatcher = BatchingEventDispatcher::new(sender_map, 100);
@@ -301,7 +305,11 @@ mod tests {
         );
         sender_map.insert(
             EventType::HeroKilled.message_id(),
-            vec![(senders[1].clone(), EventType::HeroKilled, StreamFault::new())],
+            vec![(
+                senders[1].clone(),
+                EventType::HeroKilled,
+                StreamFault::new(),
+            )],
         );
 
         let mut dispatcher = BatchingEventDispatcher::new(sender_map, 100);
