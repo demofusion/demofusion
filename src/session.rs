@@ -268,7 +268,7 @@ fn execute_query_plans(
     ctx: &SessionContext,
     result_senders: Vec<mpsc::UnboundedSender<Result<RecordBatch, SessionError>>>,
 ) -> Result<(), SessionError> {
-    for (plan, result_tx) in plans.into_iter().zip(result_senders.into_iter()) {
+    for (plan, result_tx) in plans.into_iter().zip(result_senders) {
         let stream = execute_stream(plan, ctx.task_ctx())
             .map_err(|e| SessionError::DataFusion(e.to_string()))?;
 
@@ -466,10 +466,9 @@ impl StreamingSession {
         let stats = StreamingStats::new();
 
         // Separate plans and result senders from pending queries
-        let pending: Vec<PendingQuery> = self.pending_queries.drain(..).collect();
-        let mut plans = Vec::with_capacity(pending.len());
-        let mut result_senders = Vec::with_capacity(pending.len());
-        for pq in pending {
+        let mut plans = Vec::with_capacity(self.pending_queries.len());
+        let mut result_senders = Vec::with_capacity(self.pending_queries.len());
+        for pq in self.pending_queries.drain(..) {
             plans.push(pq.physical_plan);
             result_senders.push(pq.result_tx);
         }
