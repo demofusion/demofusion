@@ -1,6 +1,7 @@
 pub mod distribution_stream;
 pub mod distributor_channels;
 pub mod pipeline_analysis;
+pub mod stream_fault;
 pub mod streaming_stats;
 pub mod table_providers;
 

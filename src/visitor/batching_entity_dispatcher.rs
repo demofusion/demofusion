@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use datafusion::arrow::record_batch::RecordBatch;
-use tracing::trace;
+use tracing::{error, trace};
 
 use crate::batch::EntityBatchBuilder;
 use crate::datafusion::distributor_channels::DistributionSender;
+use crate::datafusion::stream_fault::StreamFault;
 use crate::datafusion::streaming_stats::StreamingStats;
 use crate::haste::entities::{DeltaHeader, Entity};
 use crate::schema::EntitySchema;
@@ -21,6 +22,9 @@ use super::arrow_visitor::ArrowVisitorError;
 struct SenderWithBuilder {
     sender: DistributionSender<RecordBatch>,
     builder: EntityBatchBuilder,
+    /// This channel's fault slot. Set when the batch builder fails so that the
+    /// consumer sees an error rather than a stream that simply stops.
+    fault: StreamFault,
 }
 
 pub struct BatchingEntityDispatcher {
@@ -31,14 +35,14 @@ pub struct BatchingEntityDispatcher {
 
 impl BatchingEntityDispatcher {
     pub fn new(
-        senders: HashMap<u64, Vec<(DistributionSender<RecordBatch>, EntitySchema)>>,
+        senders: HashMap<u64, Vec<(DistributionSender<RecordBatch>, EntitySchema, StreamFault)>>,
         batch_size: usize,
     ) -> Self {
         Self::new_with_stats(senders, batch_size, None)
     }
 
     pub fn new_with_stats(
-        senders: HashMap<u64, Vec<(DistributionSender<RecordBatch>, EntitySchema)>>,
+        senders: HashMap<u64, Vec<(DistributionSender<RecordBatch>, EntitySchema, StreamFault)>>,
         batch_size: usize,
         stats: Option<Arc<StreamingStats>>,
     ) -> Self {
@@ -47,9 +51,10 @@ impl BatchingEntityDispatcher {
             .map(|(hash, sender_list)| {
                 let senders_with_builders = sender_list
                     .into_iter()
-                    .map(|(sender, schema)| SenderWithBuilder {
+                    .map(|(sender, schema, fault)| SenderWithBuilder {
                         sender,
                         builder: EntityBatchBuilder::new(&schema, batch_size),
+                        fault,
                     })
                     .collect();
                 (hash, senders_with_builders)
@@ -100,10 +105,26 @@ impl BatchingEntityDispatcher {
                     .append_entity(tick, entity_index, delta_header, entity);
 
                 if swb.builder.should_flush() {
-                    let batch = swb
-                        .builder
-                        .flush()
-                        .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
+                    // A builder failure belongs to THIS channel only. Failing
+                    // the whole parse here used to truncate every other
+                    // registered query along with it, so instead record the
+                    // fault (the consumer will see an error, not a clean end)
+                    // and retire just this sender.
+                    let batch = match swb.builder.flush() {
+                        Ok(batch) => batch,
+                        Err(e) => {
+                            error!(
+                                target: "demofusion::dispatcher",
+                                serializer_hash,
+                                error = %e,
+                                "entity batch builder failed; failing this stream only"
+                            );
+                            swb.fault
+                                .set(format!("entity batch builder failed: {e}"));
+                            failed_indices.push(idx);
+                            continue;
+                        }
+                    };
 
                     let rows = batch.num_rows();
                     let gate_blocked = swb.sender.is_gate_blocked();
@@ -145,10 +166,20 @@ impl BatchingEntityDispatcher {
 
             for (idx, swb) in sender_list.iter_mut().enumerate() {
                 if swb.builder.has_data() {
-                    let batch = swb
-                        .builder
-                        .flush()
-                        .map_err(|e| ArrowVisitorError::BatchError(e.to_string()))?;
+                    let batch = match swb.builder.flush() {
+                        Ok(batch) => batch,
+                        Err(e) => {
+                            error!(
+                                target: "demofusion::dispatcher",
+                                error = %e,
+                                "entity batch builder failed on final flush; failing this stream only"
+                            );
+                            swb.fault
+                                .set(format!("entity batch builder failed: {e}"));
+                            failed_indices.push(idx);
+                            continue;
+                        }
+                    };
 
                     let rows = batch.num_rows();
                     if let Some(stats) = &self.stats {
@@ -202,7 +233,7 @@ mod tests {
         let schema = make_simple_entity_schema(12345);
 
         let mut sender_map = HashMap::new();
-        sender_map.insert(12345u64, vec![(senders[0].clone(), schema)]);
+        sender_map.insert(12345u64, vec![(senders[0].clone(), schema, StreamFault::new())]);
 
         let dispatcher = BatchingEntityDispatcher::new(sender_map, 100);
 
@@ -261,8 +292,8 @@ mod tests {
         sender_map.insert(
             12345u64,
             vec![
-                (senders[0].clone(), schema.clone()),
-                (senders[1].clone(), schema),
+                (senders[0].clone(), schema.clone(), StreamFault::new()),
+                (senders[1].clone(), schema, StreamFault::new()),
             ],
         );
 
@@ -280,5 +311,62 @@ mod tests {
     fn test_empty_dispatcher_has_no_active_senders() {
         let dispatcher = BatchingEntityDispatcher::new(HashMap::new(), 100);
         assert!(!dispatcher.has_active_senders());
+    }
+
+    #[tokio::test]
+    async fn test_one_finished_consumer_leaves_the_others_running() {
+        // A consumer that is done (LIMIT satisfied, handle dropped) retires
+        // its own sender and nothing else. The dispatcher must keep reporting
+        // active senders so the parse continues for everyone still listening.
+        let (senders, receivers) = channels::<RecordBatch>(2);
+        let schema = make_simple_entity_schema(12345);
+
+        let mut sender_map = HashMap::new();
+        sender_map.insert(
+            12345u64,
+            vec![
+                (senders[0].clone(), schema.clone(), StreamFault::new()),
+                (senders[1].clone(), schema, StreamFault::new()),
+            ],
+        );
+        let mut dispatcher = BatchingEntityDispatcher::new(sender_map, 100);
+        drop(senders);
+
+        let mut receivers = receivers;
+        let _kept = receivers.remove(1);
+        drop(receivers.remove(0));
+
+        assert!(
+            dispatcher.flush_all().await.is_ok(),
+            "a departed consumer must not fail the flush for the rest"
+        );
+        assert!(
+            dispatcher.has_active_senders(),
+            "the surviving consumer must keep the parse alive"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_flush_never_fails_the_parse_over_a_departed_consumer() {
+        // The counterpart on the hot path: a send to a receiver that is gone
+        // reports Ok and retires that sender. Returning Err here would abort
+        // the whole parse — which is exactly how one query's ending truncated
+        // every other stream in the pass.
+        let (senders, receivers) = channels::<RecordBatch>(1);
+        let schema = make_simple_entity_schema(12345);
+
+        let mut sender_map = HashMap::new();
+        sender_map.insert(
+            12345u64,
+            vec![(senders[0].clone(), schema, StreamFault::new())],
+        );
+        let mut dispatcher = BatchingEntityDispatcher::new(sender_map, 1);
+        drop(senders);
+        drop(receivers);
+
+        assert!(
+            dispatcher.flush_all().await.is_ok(),
+            "a departed consumer is a normal event, not a parse failure"
+        );
     }
 }

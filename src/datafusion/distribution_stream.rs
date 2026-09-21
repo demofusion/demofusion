@@ -9,24 +9,39 @@ use std::task::{Context, Poll};
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::error::Result as DfResult;
+use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::physical_plan::RecordBatchStream;
 use futures::Stream;
-use tracing::{debug, trace};
+use tracing::{debug, error, trace};
 
 use super::distributor_channels::DistributionReceiver;
+use super::stream_fault::StreamFault;
 
 pub struct DistributionReceiverStream {
     schema: SchemaRef,
     receiver: DistributionReceiver<RecordBatch>,
+    /// Set by the producer when this channel's data is incomplete. Checked at
+    /// end-of-stream so a truncated stream errors instead of ending cleanly.
+    fault: StreamFault,
     finished: bool,
 }
 
 impl DistributionReceiverStream {
+    /// A stream that can never report a fault. For tests and callers that own
+    /// both ends; production streams go through [`Self::with_fault`].
     pub fn new(schema: SchemaRef, receiver: DistributionReceiver<RecordBatch>) -> Self {
+        Self::with_fault(schema, receiver, StreamFault::new())
+    }
+
+    pub fn with_fault(
+        schema: SchemaRef,
+        receiver: DistributionReceiver<RecordBatch>,
+        fault: StreamFault,
+    ) -> Self {
         Self {
             schema,
             receiver,
+            fault,
             finished: false,
         }
     }
@@ -54,8 +69,25 @@ impl Stream for DistributionReceiverStream {
                 Poll::Ready(Some(Ok(batch)))
             }
             Poll::Ready(None) => {
-                debug!(target: "demofusion::stream", "poll_next: stream ended (senders dropped)");
                 self.finished = true;
+
+                // The senders are gone. Whether that means "the demo ended" or
+                // "the producer died half way through" is not visible on the
+                // channel itself, so ask the fault slot. Reporting the error
+                // here is what keeps a truncated stream from masquerading as a
+                // complete one.
+                if let Some(reason) = self.fault.get() {
+                    error!(
+                        target: "demofusion::stream",
+                        %reason,
+                        "poll_next: stream ended early, surfacing producer fault"
+                    );
+                    return Poll::Ready(Some(Err(DataFusionError::Execution(format!(
+                        "demo stream truncated: {reason}"
+                    )))));
+                }
+
+                debug!(target: "demofusion::stream", "poll_next: stream ended (senders dropped)");
                 Poll::Ready(None)
             }
             Poll::Pending => {
@@ -136,5 +168,92 @@ mod tests {
 
         let result = stream.next().await;
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_unset_fault_still_ends_cleanly() {
+        // Intentional early termination — every consumer satisfied, senders
+        // dropped, no fault recorded — must still look like a normal end of
+        // stream. Regressing this would turn every satisfied LIMIT query into
+        // a failure.
+        use crate::datafusion::distributor_channels::channels;
+
+        let schema = make_test_schema();
+        let (senders, mut receivers) = channels::<RecordBatch>(1);
+
+        senders[0]
+            .send(make_test_batch(&schema, &[1, 2]))
+            .await
+            .unwrap();
+        drop(senders);
+
+        let mut stream = DistributionReceiverStream::with_fault(
+            schema,
+            receivers.pop().unwrap(),
+            StreamFault::new(),
+        );
+
+        assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 2);
+        assert!(
+            stream.next().await.is_none(),
+            "a stream with no fault recorded must end cleanly"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_reports_fault_instead_of_ending_cleanly() {
+        // The whole point of the fault channel: the producer died part way
+        // through, so the consumer must see an error rather than an ordinary
+        // end of stream that is indistinguishable from a demo running out.
+        use crate::datafusion::distributor_channels::channels;
+
+        let schema = make_test_schema();
+        let (senders, mut receivers) = channels::<RecordBatch>(1);
+        let fault = StreamFault::new();
+
+        senders[0]
+            .send(make_test_batch(&schema, &[1, 2, 3]))
+            .await
+            .unwrap();
+
+        // The producer records why it is going away *before* dropping its
+        // senders, which is the ordering the parser task guarantees.
+        fault.set("field path not found");
+        drop(senders);
+
+        let mut stream =
+            DistributionReceiverStream::with_fault(schema, receivers.pop().unwrap(), fault);
+
+        // The rows produced before the failure are real and still delivered.
+        assert_eq!(stream.next().await.unwrap().unwrap().num_rows(), 3);
+
+        let err = stream
+            .next()
+            .await
+            .expect("a faulted stream must yield an error, not None")
+            .expect_err("the terminal item must be an error");
+        assert!(
+            err.to_string().contains("field path not found"),
+            "the error must carry the reason, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_faulted_stream_does_not_repeat_its_error() {
+        // The error is terminal: polling past it yields None, so a consumer
+        // that keeps polling does not spin on the same failure forever.
+        use crate::datafusion::distributor_channels::channels;
+
+        let schema = make_test_schema();
+        let (senders, mut receivers) = channels::<RecordBatch>(1);
+        let fault = StreamFault::new();
+        fault.set("decode failed");
+        drop(senders);
+
+        let mut stream =
+            DistributionReceiverStream::with_fault(schema, receivers.pop().unwrap(), fault);
+
+        assert!(stream.next().await.unwrap().is_err());
+        assert!(stream.next().await.is_none());
     }
 }

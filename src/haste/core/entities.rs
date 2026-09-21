@@ -422,6 +422,33 @@ impl EntityContainer {
         }
     }
 
+    /// Give `index` to whichever map is about to record it, evicting the other.
+    ///
+    /// An entity index identifies at most one live entity, so `entities` and
+    /// `skipped_serializers` must never both hold the same index. The engine
+    /// can reuse an index with a CREATE and no intervening LEAVE/DELETE (an
+    /// entity that left PVS is removed from the client's view without one), so
+    /// every CREATE has to evict whatever the other map still remembers.
+    ///
+    /// Without this, a tracked CREATE at an index previously held by an
+    /// untracked entity left a stale serializer in `skipped_serializers`.
+    /// `handle_update` consults that map first, so every later UPDATE for the
+    /// index was skipped against the WRONG field layout, which fails with
+    /// `FieldNotFound` (or, worse, silently consumes the wrong number of bits
+    /// and desyncs the rest of the packet). Observed on 106452596.dem at entity
+    /// index 2520, where a tracked CNPC_TrooperNeutral was created over a stale
+    /// skipped serializer and killed the parse at tick 21,131 of 126,162 —
+    /// taking every other registered query's stream down with it.
+    ///
+    /// The reverse direction matters too: an untracked CREATE over a stale
+    /// `entities` entry left the parser emitting rows from the dead entity,
+    /// because the UPDATE branch falls through to `entities.get(index)` after
+    /// `handle_update` returns `None` for a skipped index.
+    fn claim_index(&mut self, index: i32) {
+        self.entities.remove(&index);
+        self.skipped_serializers.remove(&index);
+    }
+
     #[allow(dead_code)]
     pub(crate) fn handle_create(
         &mut self,
@@ -472,6 +499,7 @@ impl EntityContainer {
 
         entity.parse(field_decode_ctx, br, &mut self.field_paths)?;
 
+        self.claim_index(index);
         self.entities.insert(index, entity);
         Ok(index)
     }
@@ -503,8 +531,11 @@ impl EntityContainer {
 
         let serializer_hash = serializer.serializer_name.hash;
 
+        // See [`Self::claim_index`]: an index belongs to exactly one of the two
+        // maps, and a CREATE is what decides which.
         if !should_track(serializer_hash) {
             skip_entity_fields(&serializer, field_decode_ctx, br, &mut self.field_paths)?;
+            self.claim_index(index);
             self.skipped_serializers.insert(index, serializer);
             return Ok(None);
         }
@@ -538,6 +569,7 @@ impl EntityContainer {
 
         entity.parse(field_decode_ctx, br, &mut self.field_paths)?;
 
+        self.claim_index(index);
         self.entities.insert(index, entity);
         Ok(Some(index))
     }
@@ -611,5 +643,88 @@ impl EntityContainer {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::haste::core::flattenedserializers::Symbol;
+
+    fn serializer(hash: u64) -> Arc<FlattenedSerializer> {
+        Arc::new(FlattenedSerializer {
+            serializer_name: Symbol { hash },
+            fields: Vec::new(),
+        })
+    }
+
+    /// The invariant `claim_index` exists to keep: an entity index is recorded
+    /// in `entities` or in `skipped_serializers`, never in both.
+    ///
+    /// The regression: the engine reuses an entity index with a CREATE and no
+    /// intervening LEAVE/DELETE. A tracked CREATE over an index that an
+    /// untracked entity had used left the untracked serializer behind, and
+    /// `handle_update` reads that map first — so every later UPDATE for the
+    /// index was decoded against the wrong field layout and the parse died with
+    /// `FieldNotFound`. On 106452596.dem that happened at index 2520 and took
+    /// every registered query's stream down with it, silently.
+    #[test]
+    fn a_tracked_create_evicts_a_stale_skipped_serializer() {
+        let mut container = EntityContainer::new();
+        container.skipped_serializers.insert(2520, serializer(1));
+
+        // What a tracked CREATE at that index does before inserting.
+        container.claim_index(2520);
+
+        assert!(
+            !container.skipped_serializers.contains_key(&2520),
+            "a stale skipped serializer survived a CREATE at the same index; \
+             handle_update would decode the new entity against the old layout"
+        );
+    }
+
+    /// The other direction: an untracked CREATE over a tracked index must not
+    /// leave the old entity behind, or the parser's UPDATE branch keeps
+    /// emitting rows for an entity that no longer exists at that index.
+    #[test]
+    fn an_untracked_create_evicts_a_stale_tracked_entity() {
+        let mut container = EntityContainer::new();
+        container.entities.insert(
+            2520,
+            Entity {
+                index: 2520,
+                fields: HashMap::with_hasher(BuildHasherDefault::default()),
+                serializer: serializer(2),
+            },
+        );
+
+        container.claim_index(2520);
+
+        assert!(
+            !container.entities.contains_key(&2520),
+            "a stale tracked entity survived an untracked CREATE at the same index"
+        );
+    }
+
+    #[test]
+    fn claiming_an_unused_index_is_harmless() {
+        let mut container = EntityContainer::new();
+        container.entities.insert(
+            7,
+            Entity {
+                index: 7,
+                fields: HashMap::with_hasher(BuildHasherDefault::default()),
+                serializer: serializer(3),
+            },
+        );
+        container.skipped_serializers.insert(9, serializer(4));
+
+        container.claim_index(2520);
+
+        assert!(container.entities.contains_key(&7), "evicted the wrong index");
+        assert!(
+            container.skipped_serializers.contains_key(&9),
+            "evicted the wrong index"
+        );
     }
 }
