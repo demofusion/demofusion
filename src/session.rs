@@ -592,6 +592,7 @@ impl StreamingSession {
         Ok((parser_handle, stats))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn spawn_parser(
         &self,
         source: PacketSourceKind,
@@ -789,6 +790,7 @@ async fn run_parser_demo<P: PacketSource + 'static>(
 }
 
 #[cfg(feature = "gotv")]
+#[allow(clippy::too_many_arguments)]
 async fn run_parser_broadcast(
     packet_rx: mpsc::Receiver<Bytes>,
     start_packet: Bytes,
@@ -979,8 +981,12 @@ mod tests {
         let slot2 = ReceiverSlot::new();
 
         let mut rx_iter = receivers.into_iter();
-        slot1.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
-        slot2.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
+        slot1
+            .inject(rx_iter.next().unwrap(), StreamFault::new())
+            .unwrap();
+        slot2
+            .inject(rx_iter.next().unwrap(), StreamFault::new())
+            .unwrap();
 
         // Verify slots were filled by taking from them
         let (_rx1, _f1) = slot1.take();
@@ -997,7 +1003,8 @@ mod tests {
         let mut rx_iter = receivers.into_iter();
 
         let slot = ReceiverSlot::new();
-        slot.inject(rx_iter.next().unwrap(), StreamFault::new()).unwrap();
+        slot.inject(rx_iter.next().unwrap(), StreamFault::new())
+            .unwrap();
 
         let result = slot.inject(rx_iter.next().unwrap(), StreamFault::new());
         assert!(result.is_err());

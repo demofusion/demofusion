@@ -4,7 +4,9 @@
 pub mod gotv_impl {
     use std::sync::Arc;
 
-    use super::super::exceptions::{DemofusionError, DemofusionSessionError, session_error_to_pyexc};
+    use super::super::exceptions::{
+        DemofusionError, DemofusionSessionError, session_error_to_pyexc,
+    };
     use super::super::session::PyStreamingSession;
     use crate::gotv::GotvSource;
     use crate::session::IntoStreamingSession;
@@ -33,6 +35,7 @@ pub mod gotv_impl {
 
         /// Initialize session and discover schemas (async).
         #[pyo3(signature = (*, batch_size=None, reject_pipeline_breakers=None))]
+        #[allow(clippy::wrong_self_convention)]
         fn into_session<'py>(
             &self,
             py: Python<'py>,
@@ -42,9 +45,7 @@ pub mod gotv_impl {
             let inner = Arc::clone(&self.inner);
             future_into_py(py, async move {
                 let source = inner.lock().take().ok_or_else(|| {
-                    DemofusionSessionError::new_err(
-                        "GotvSource already consumed by into_session()",
-                    )
+                    DemofusionSessionError::new_err("GotvSource already consumed by into_session()")
                 })?;
                 match source.into_session().await {
                     Ok(session) => Ok(PyStreamingSession::from_session(

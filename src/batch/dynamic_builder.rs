@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn test_float32_builder() {
         let mut builder = DynamicBuilder::new(&DataType::Float32, 10);
-        builder.append_field_value(&FieldValue::F32(3.14)).unwrap();
+        builder.append_field_value(&FieldValue::F32(3.25)).unwrap();
         builder.append_null();
 
         let array = builder.finish();

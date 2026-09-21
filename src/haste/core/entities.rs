@@ -721,7 +721,10 @@ mod tests {
 
         container.claim_index(2520);
 
-        assert!(container.entities.contains_key(&7), "evicted the wrong index");
+        assert!(
+            container.entities.contains_key(&7),
+            "evicted the wrong index"
+        );
         assert!(
             container.skipped_serializers.contains_key(&9),
             "evicted the wrong index"
