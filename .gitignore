@@ -1,6 +1,17 @@
 /target
+/dist
+
+# Python
 __pycache__/
 *.so
 *.abi3.so
 *.pyc
+.pytest_cache/
+.ruff_cache/
 .venv/
+
+# Agent tooling
+.claude/
+
+# Generated dependency-check report
+scripts/deps-report.md
