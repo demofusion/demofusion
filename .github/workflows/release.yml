@@ -1,10 +1,7 @@
 name: Release
 
-# Build and publish Python wheels when a new version is tagged (v*).
-# Requires the tag to match the version in pyproject.toml.
-#
-# Publishing uses PyPI trusted publishing: set up a pending publisher on
-# PyPI for this repo + the `pypi` environment before the first release.
+# Build Python wheels when a new version is tagged (v*) and publish them
+# to a GitHub release. Requires the tag to match the version in pyproject.toml.
 
 on:
   push:
@@ -134,26 +131,9 @@ jobs:
           pip install pytest pytest-asyncio
           pytest -q || [ $? -eq 5 ]  # exit code 5 = all tests skipped, which is fine
 
-  publish-pypi:
-    name: Publish to PyPI
-    needs: [build-sdist, build-wheels, smoke-test]
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-
   github-release:
     name: GitHub Release
-    needs: publish-pypi
+    needs: [build-sdist, build-wheels, smoke-test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
